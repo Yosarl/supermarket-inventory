@@ -1,0 +1,238 @@
+import { useState } from 'react';
+import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import AppBar from '@mui/material/AppBar';
+import Box from '@mui/material/Box';
+import Drawer from '@mui/material/Drawer';
+import IconButton from '@mui/material/IconButton';
+import List from '@mui/material/List';
+import ListItemButton from '@mui/material/ListItemButton';
+import ListItemIcon from '@mui/material/ListItemIcon';
+import ListItemText from '@mui/material/ListItemText';
+import Toolbar from '@mui/material/Toolbar';
+import Typography from '@mui/material/Typography';
+import Menu from '@mui/material/Menu';
+import MenuItem from '@mui/material/MenuItem';
+import Collapse from '@mui/material/Collapse';
+import ExpandLess from '@mui/icons-material/ExpandLess';
+import ExpandMore from '@mui/icons-material/ExpandMore';
+import MenuIcon from '@mui/icons-material/Menu';
+import DashboardIcon from '@mui/icons-material/Dashboard';
+import BusinessIcon from '@mui/icons-material/Business';
+import AddBusinessIcon from '@mui/icons-material/AddBusiness';
+import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
+import InventoryIcon from '@mui/icons-material/Inventory';
+import AddIcon from '@mui/icons-material/Add';
+import PointOfSaleIcon from '@mui/icons-material/PointOfSale';
+import AccountTreeIcon from '@mui/icons-material/AccountTree';
+import AssessmentIcon from '@mui/icons-material/Assessment';
+import LogoutIcon from '@mui/icons-material/Logout';
+import PeopleIcon from '@mui/icons-material/People';
+import LockIcon from '@mui/icons-material/Lock';
+import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
+import ReceiptIcon from '@mui/icons-material/Receipt';
+import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
+import ListAltIcon from '@mui/icons-material/ListAlt';
+import BackupIcon from '@mui/icons-material/Backup';
+import RestoreIcon from '@mui/icons-material/Restore';
+import QrCode2Icon from '@mui/icons-material/QrCode2';
+import PrintIcon from '@mui/icons-material/Print';
+import HelpIcon from '@mui/icons-material/Help';
+import CloudUploadIcon from '@mui/icons-material/CloudUpload';
+import MenuBookIcon from '@mui/icons-material/MenuBook';
+import InfoIcon from '@mui/icons-material/Info';
+import { useAppDispatch, useAppSelector } from '../store/hooks';
+import { logout } from '../store/slices/authSlice';
+
+const W = 280;
+
+type MenuItemDef = { label: string; path?: string; icon?: React.ReactNode; action?: 'logout'; permission?: string };
+type SectionDef = { title: string; items: MenuItemDef[] };
+
+const menuSections: SectionDef[] = [
+  {
+    title: 'FILE',
+    items: [
+      { label: 'User Management', path: '/file/users', icon: <PeopleIcon /> },
+      { label: 'Create User', path: '/file/users/create', icon: <AddIcon /> },
+      { label: 'Update User Credentials', path: '/file/users/credentials', icon: <LockIcon /> },
+      { label: 'User Permissions', path: '/file/users/permissions', icon: <LockIcon /> },
+      { label: 'Create Company', path: '/file/companies/create', icon: <AddBusinessIcon /> },
+      { label: 'Change Financial Year', path: '/file/change-financial-year', icon: <CalendarMonthIcon /> },
+      { label: 'Exit', icon: <LogoutIcon />, action: 'logout' },
+    ],
+  },
+  {
+    title: 'MASTER',
+    items: [
+      { label: 'Customer Reg', path: '/master/customers', icon: <BusinessIcon /> },
+      { label: 'Supplier Reg', path: '/master/suppliers', icon: <BusinessIcon /> },
+      { label: 'Other Ledger Reg', path: '/master/ledger-accounts', icon: <AccountTreeIcon /> },
+      { label: 'Group Reg', path: '/master/groups', icon: <AccountTreeIcon /> },
+      { label: 'Chart of Accounts', path: '/master/chart-of-accounts', icon: <AccountTreeIcon /> },
+      { label: 'Product Reg', path: '/master/products', icon: <InventoryIcon /> },
+      { label: 'Product Management', path: '/master/products/management', icon: <InventoryIcon /> },
+      { label: 'Stock Adjustment', path: '/master/stock-adjustment', icon: <InventoryIcon /> },
+    ],
+  },
+  {
+    title: 'ENTRY',
+    items: [
+      { label: 'POS Sales', path: '/entry/pos', icon: <PointOfSaleIcon /> },
+      { label: 'Sales B2C', path: '/entry/sales-b2c', icon: <ReceiptIcon /> },
+      { label: 'Sales B2B', path: '/entry/sales-b2b', icon: <ReceiptIcon /> },
+      { label: 'Quotation Sales', path: '/entry/quotation-sales', icon: <ReceiptIcon /> },
+      { label: 'Sales Return', path: '/entry/sales-return', icon: <ReceiptIcon /> },
+      { label: 'Purchase Entry', path: '/entry/purchase', icon: <ShoppingCartIcon /> },
+      { label: 'Purchase Order Entry', path: '/entry/purchase-order', icon: <ShoppingCartIcon /> },
+      { label: 'Purchase Return', path: '/entry/purchase-return', icon: <ShoppingCartIcon /> },
+      { label: 'Opening Stock', path: '/entry/opening-stock', icon: <InventoryIcon /> },
+      { label: 'Opening Balance', path: '/entry/opening-balance', icon: <AccountTreeIcon /> },
+      { label: 'Receipt Voucher', path: '/entry/voucher/receipt', icon: <ReceiptIcon /> },
+      { label: 'Payment Voucher', path: '/entry/voucher/payment', icon: <ReceiptIcon /> },
+      { label: 'Journal Voucher', path: '/entry/voucher/journal', icon: <AccountTreeIcon /> },
+      { label: 'Cheque Payment', path: '/entry/voucher/cheque-payment', icon: <ReceiptIcon /> },
+      { label: 'Cheque Receipt', path: '/entry/voucher/cheque-receipt', icon: <ReceiptIcon /> },
+      { label: 'Bank Reconciliation', path: '/entry/bank-reconciliation', icon: <AccountBalanceIcon /> },
+      { label: 'Damage / Wastage Entry', path: '/entry/damage-wastage', icon: <InventoryIcon /> },
+    ],
+  },
+  {
+    title: 'REPORT',
+    items: [
+      { label: 'Product List', path: '/report/product-list', icon: <ListAltIcon /> },
+      { label: 'Unit List', path: '/report/unit-list', icon: <ListAltIcon /> },
+      { label: 'Customer List', path: '/report/customer-list', icon: <ListAltIcon /> },
+      { label: 'Supplier List', path: '/report/supplier-list', icon: <ListAltIcon /> },
+      { label: 'Opening Stock List', path: '/report/opening-stock-list', icon: <ListAltIcon /> },
+      { label: 'Other Ledger List', path: '/report/other-ledger-list', icon: <ListAltIcon /> },
+      { label: 'Ledger Report', path: '/report/ledger', icon: <AssessmentIcon /> },
+      { label: 'Group List', path: '/report/group-list', icon: <AssessmentIcon /> },
+      { label: 'Cash Book', path: '/report/cash-book', icon: <AssessmentIcon /> },
+      { label: 'Day Book', path: '/report/day-book', icon: <AssessmentIcon /> },
+      { label: 'Trial Balance', path: '/report/trial-balance', icon: <AssessmentIcon /> },
+      { label: 'Profit & Loss Account', path: '/report/profit-loss', icon: <AssessmentIcon /> },
+      { label: 'Balance Sheet', path: '/report/balance-sheet', icon: <AssessmentIcon /> },
+      { label: 'Purchase Report', path: '/report/purchase-report', icon: <AssessmentIcon /> },
+      { label: 'Sales Report', path: '/report/sales-report', icon: <AssessmentIcon /> },
+      { label: 'Stock Report', path: '/report/stock-report', icon: <AssessmentIcon /> },
+      { label: 'Stock Ledger Report', path: '/report/stock-ledger', icon: <AssessmentIcon /> },
+      { label: 'Profit and Loss in Sales', path: '/report/pl-sales', icon: <AssessmentIcon /> },
+      { label: 'Opening Stock Report', path: '/report/opening-stock-report', icon: <AssessmentIcon /> },
+      { label: 'Purchase Return Report', path: '/report/purchase-return-report', icon: <AssessmentIcon /> },
+      { label: 'Sales Return Report', path: '/report/sales-return-report', icon: <AssessmentIcon /> },
+      { label: 'Product Movement Report', path: '/report/product-movement', icon: <AssessmentIcon /> },
+      { label: 'Event Report', path: '/report/event-report', icon: <AssessmentIcon /> },
+    ],
+  },
+  {
+    title: 'UTILITIES',
+    items: [
+      { label: 'Backup', path: '/utilities/backup', icon: <BackupIcon />, permission: 'utilities.backup' },
+      { label: 'Restore', path: '/utilities/restore', icon: <RestoreIcon />, permission: 'utilities.restore' },
+      { label: 'Barcode Design', path: '/utilities/barcode-design', icon: <QrCode2Icon /> },
+      { label: 'Barcode Print', path: '/utilities/barcode-print', icon: <PrintIcon /> },
+    ],
+  },
+  {
+    title: 'HELP',
+    items: [
+      { label: 'Backup Database (shortcut)', path: '/help/backup', icon: <BackupIcon /> },
+      { label: 'Restore Database (shortcut)', path: '/help/restore', icon: <RestoreIcon /> },
+      { label: 'Import Opening Stock Products', path: '/help/import-opening-stock', icon: <CloudUploadIcon /> },
+      { label: 'User Guide / Documentation', path: '/help/user-guide', icon: <MenuBookIcon /> },
+      { label: 'About / Support', path: '/help/about', icon: <InfoIcon /> },
+    ],
+  },
+];
+
+export default function MainLayout() {
+  const [open, setOpen] = useState(true);
+  const [anchor, setAnchor] = useState<null | HTMLElement>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({
+    FILE: true,
+    MASTER: true,
+    ENTRY: false,
+    REPORT: false,
+    UTILITIES: true,
+    HELP: true,
+  });
+  const navigate = useNavigate();
+  const loc = useLocation();
+  const dispatch = useAppDispatch();
+  const user = useAppSelector((s) => s.auth.user);
+  const cid = useAppSelector((s) => s.app.selectedCompanyId);
+
+  const canAccess = (item: MenuItemDef): boolean => {
+    if (!item.permission) return true;
+    if (user?.roles?.includes('Admin')) return true;
+    const perms = user?.permissions ?? [];
+    return perms.includes('*') || perms.includes(item.permission);
+  };
+
+  const toggleSection = (title: string) => {
+    setExpanded((e) => ({ ...e, [title]: !e[title] }));
+  };
+
+  const handleNav = (item: MenuItemDef) => {
+    if (item.action === 'logout') {
+      dispatch(logout());
+      navigate('/login');
+      setAnchor(null);
+      return;
+    }
+    if (item.path) navigate(item.path);
+  };
+
+  return (
+    <Box sx={{ display: 'flex', minHeight: '100vh' }}>
+      <AppBar position="fixed" sx={{ zIndex: 1201 }}>
+        <Toolbar>
+          <IconButton color="inherit" onClick={() => setOpen(!open)} edge="start" sx={{ mr: 2 }}><MenuIcon /></IconButton>
+          <Typography variant="h6" sx={{ flexGrow: 1 }}>Supermarket (UAE)</Typography>
+          {cid && <Typography variant="body2" sx={{ mr: 2 }}>Company</Typography>}
+          <IconButton color="inherit" onClick={(e) => setAnchor(e.currentTarget)}><Typography variant="body2">{user?.fullName ?? user?.username ?? 'User'}</Typography></IconButton>
+          <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
+            <MenuItem onClick={() => { dispatch(logout()); navigate('/login'); setAnchor(null); }}>
+              <ListItemIcon><LogoutIcon fontSize="small" /></ListItemIcon> Logout
+            </MenuItem>
+          </Menu>
+        </Toolbar>
+      </AppBar>
+      <Drawer variant="persistent" open={open} sx={{ width: W, flexShrink: 0, '& .MuiDrawer-paper': { width: W, top: 64 } }}>
+        <Toolbar />
+        <List sx={{ py: 0, overflow: 'auto' }}>
+          <ListItemButton selected={loc.pathname === '/'} onClick={() => navigate('/')}>
+            <ListItemIcon><DashboardIcon /></ListItemIcon>
+            <ListItemText primary="Dashboard" />
+          </ListItemButton>
+          {menuSections.map((sec) => (
+            <Box key={sec.title}>
+              <ListItemButton onClick={() => toggleSection(sec.title)} sx={{ py: 0.5 }}>
+                <ListItemText primary={sec.title} primaryTypographyProps={{ variant: 'caption', fontWeight: 700 }} />
+                {expanded[sec.title] ? <ExpandLess /> : <ExpandMore />}
+              </ListItemButton>
+              <Collapse in={expanded[sec.title]} timeout="auto" unmountOnExit>
+                <List component="div" disablePadding dense>
+                  {sec.items.filter(canAccess).map((item) => (
+                    <ListItemButton
+                      key={item.label}
+                      selected={item.path ? loc.pathname === item.path : false}
+                      onClick={() => handleNav(item)}
+                      sx={{ pl: 2 }}
+                    >
+                      {item.icon && <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>}
+                      <ListItemText primary={item.label} primaryTypographyProps={{ variant: 'body2' }} />
+                    </ListItemButton>
+                  ))}
+                </List>
+              </Collapse>
+            </Box>
+          ))}
+        </List>
+      </Drawer>
+      <Box component="main" sx={{ flexGrow: 1, p: 3, mt: 7, ml: open ? 0 : -W }}>
+        <Outlet />
+      </Box>
+    </Box>
+  );
+}
