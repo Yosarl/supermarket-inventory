@@ -41,6 +41,19 @@ export async function listCompanies(
   }
 }
 
+export async function getNextCode(
+  _req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const code = await companyService.getNextCompanyCode();
+    res.json({ success: true, data: { code } });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getCompany(
   req: AuthRequest,
   res: Response,
@@ -49,6 +62,32 @@ export async function getCompany(
   try {
     const companyId = req.params.id;
     const data = await companyService.getById(companyId);
+    if (!data) {
+      res.status(404).json({ success: false, message: 'Company not found' });
+      return;
+    }
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export const updateCompanyValidators = [
+  body('name').optional().trim().notEmpty().withMessage('Company name cannot be empty'),
+];
+
+export async function updateCompany(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.params.id;
+    const userId = req.user!._id.toString();
+    const data = await companyService.updateCompany(companyId, {
+      ...req.body,
+      updatedBy: userId,
+    });
     if (!data) {
       res.status(404).json({ success: false, message: 'Company not found' });
       return;

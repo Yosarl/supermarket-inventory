@@ -33,11 +33,11 @@ export async function listUsers(opts: { companyId?: string } = {}): Promise<IUse
   return User.find(filter)
     .select('-passwordHash')
     .sort({ username: 1 })
-    .lean() as Promise<IUser[]>;
+    .lean() as unknown as Promise<IUser[]>;
 }
 
 export async function getById(userId: string): Promise<IUser | null> {
-  return User.findById(userId).select('-passwordHash').lean();
+  return User.findById(userId).select('-passwordHash').lean() as unknown as IUser | null;
 }
 
 export async function createUser(input: CreateUserInput): Promise<IUser> {

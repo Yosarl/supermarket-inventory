@@ -9,7 +9,10 @@ export default function UserCredentials() {
   const [open, setOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState('');
-  const [message, setMessage] = useState('');
+  const [successDialogOpen, setSuccessDialogOpen] = useState(false);
+  const [successDialogMessage, setSuccessDialogMessage] = useState('');
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false);
+  const [errorDialogMessage, setErrorDialogMessage] = useState('');
 
   useEffect(() => {
     userApi.list().then((res) => {
@@ -21,20 +24,21 @@ export default function UserCredentials() {
     if (!selectedId || !newPassword) return;
     try {
       await userApi.resetPassword(selectedId, newPassword);
-      setMessage('Password updated.');
+      setSuccessDialogMessage('Password updated.');
+      setSuccessDialogOpen(true);
       setOpen(false);
       setSelectedId(null);
       setNewPassword('');
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
-      setMessage(err?.response?.data?.message ?? 'Failed');
+      setErrorDialogMessage(err?.response?.data?.message ?? 'Failed');
+      setErrorDialogOpen(true);
     }
   };
 
   return (
     <Box>
       <Typography variant="h4" gutterBottom>Update User Credentials</Typography>
-      {message && <Typography color={message.includes('updated') ? 'primary' : 'error'} sx={{ mb: 2 }}>{message}</Typography>}
       {loading ? <Typography>Loading...</Typography> : (
         <TableContainer component={Paper}>
           <Table>
@@ -51,7 +55,7 @@ export default function UserCredentials() {
                   <TableCell>{u.username}</TableCell>
                   <TableCell>{u.fullName}</TableCell>
                   <TableCell align="right">
-                    <Button size="small" startIcon={<LockResetIcon />} onClick={() => { setSelectedId(u._id); setNewPassword(''); setMessage(''); setOpen(true); }}>Reset Password</Button>
+                    <Button size="small" startIcon={<LockResetIcon />} onClick={() => { setSelectedId(u._id); setNewPassword(''); setOpen(true); }}>Reset Password</Button>
                   </TableCell>
                 </TableRow>
               ))}
@@ -66,7 +70,25 @@ export default function UserCredentials() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleReset} disabled={!newPassword.trim()}>Update</Button>
+          <Button variant="contained" onClick={handleReset} disabled={!newPassword.trim()} autoFocus>Update</Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog open={successDialogOpen} onClose={() => setSuccessDialogOpen(false)}>
+        <DialogTitle sx={{ color: '#16a34a' }}>Success</DialogTitle>
+        <DialogContent>
+          <Typography>{successDialogMessage}</Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSuccessDialogOpen(false)} variant="contained" sx={{ bgcolor: '#16a34a', '&:hover': { bgcolor: '#15803d' } }} autoFocus>OK</Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog open={errorDialogOpen} onClose={() => setErrorDialogOpen(false)}>
+        <DialogTitle sx={{ color: '#dc2626' }}>Error</DialogTitle>
+        <DialogContent>
+          <Typography>{errorDialogMessage}</Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setErrorDialogOpen(false)} variant="contained" sx={{ bgcolor: '#dc2626', '&:hover': { bgcolor: '#b91c1c' } }} autoFocus>OK</Button>
         </DialogActions>
       </Dialog>
     </Box>

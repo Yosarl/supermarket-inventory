@@ -4,7 +4,8 @@ import { useForm } from 'react-hook-form';
 import { Box, Button, TextField, Typography, Paper, Alert } from '@mui/material';
 import { useAppDispatch } from '../store/hooks';
 import { setCredentials } from '../store/slices/authSlice';
-import { authApi } from '../services/api';
+import { setCompany, setFinancialYear } from '../store/slices/appSlice';
+import { authApi, financialYearApi } from '../services/api';
 
 interface LoginForm {
   username: string;
@@ -21,18 +22,33 @@ export default function Login() {
     setError('');
     try {
       const res = await authApi.login(data.username, data.password);
-      const { token, user } = res.data.data as { token: string; user: unknown };
-      dispatch(setCredentials({
-        token,
-        user: user as {
-          _id: string;
-          username: string;
-          fullName: string;
-          roles: string[];
-          permissions: string[];
-          companyAccess: string[];
-        },
-      }));
+      const { token, user } = res.data.data as { token: string; user: { companyAccess?: string[] } };
+      const userPayload = user as {
+        _id: string;
+        username: string;
+        fullName: string;
+        roles: string[];
+        permissions: string[];
+        companyAccess: string[];
+      };
+      dispatch(setCredentials({ token, user: userPayload }));
+
+      const hasCompany = userPayload.companyAccess?.length && userPayload.companyAccess.length > 0;
+      if (!hasCompany) {
+        navigate('/file/companies/create');
+        return;
+      }
+      if (userPayload.companyAccess.length === 1) {
+        const companyId = userPayload.companyAccess[0];
+        dispatch(setCompany(companyId));
+        try {
+          const fyRes = await financialYearApi.getCurrent(companyId);
+          const fy = fyRes.data.data as { _id: string };
+          if (fy?._id) dispatch(setFinancialYear(fy._id));
+        } catch {
+          // ignore if no current FY
+        }
+      }
       navigate('/');
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Login failed';

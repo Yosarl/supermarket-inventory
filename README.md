@@ -9,7 +9,7 @@ Production-grade MERN stack application for supermarket inventory and accounting
 - **Database:** MongoDB
 - **Auth:** JWT, bcrypt, RBAC
 
-## Quick Start
+## Quick Start (Web)
 
 ```bash
 # Install all dependencies
@@ -26,6 +26,23 @@ npm run dev
 - Backend: http://localhost:5000
 - Frontend: http://localhost:3000
 
+## Electron Desktop App
+
+```bash
+# Install all dependencies
+npm run install:all
+
+# Run as Electron desktop app (backend + Electron frontend)
+npm run electron:dev
+
+# Build distributable packages
+npm run electron:build:win    # Windows (NSIS installer)
+npm run electron:build:mac    # macOS (DMG)
+npm run electron:build:linux  # Linux (AppImage)
+```
+
+> **Note:** The backend server must be running (or started via `electron:dev`) for the app to connect to the API. Make sure MongoDB is also running.
+
 ## Default Login (after seed)
 
 - **Admin:** username `admin`, password `Admin@123`
@@ -35,7 +52,7 @@ npm run dev
 
 ```
 supermarket-inventory/
-├── backend/          # Express API (TypeScript)
+├── backend/              # Express API (TypeScript)
 │   └── src/
 │       ├── config/
 │       ├── models/
@@ -44,14 +61,18 @@ supermarket-inventory/
 │       ├── services/
 │       ├── middlewares/
 │       └── utils/
-├── frontend/         # React SPA (TypeScript)
-│   └── src/
-│       ├── components/
-│       ├── pages/
-│       ├── store/
-│       ├── services/
-│       ├── layouts/
-│       └── routes/
+├── frontend/             # React SPA + Electron (TypeScript)
+│   ├── electron/
+│   │   ├── main.ts       # Electron main process
+│   │   └── preload.ts    # Preload script (context bridge)
+│   ├── src/
+│   │   ├── components/
+│   │   ├── pages/
+│   │   ├── store/
+│   │   ├── services/
+│   │   └── layouts/
+│   ├── electron-builder.yml  # Packaging config
+│   └── vite.config.ts
 └── README.md
 ```
 

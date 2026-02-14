@@ -1,5 +1,8 @@
 import mongoose from 'mongoose';
-import { LedgerAccount, ILedgerAccount } from '../models/LedgerAccount';
+import { LedgerAccount, ILedgerAccount, IOpeningBalance } from '../models/LedgerAccount';
+import { LedgerEntry } from '../models/LedgerEntry';
+import { SalesInvoice } from '../models/SalesInvoice';
+import { Voucher } from '../models/Voucher';
 import { AppError } from '../middlewares/errorHandler';
 
 export async function listByCompany(
@@ -16,11 +19,11 @@ export async function listByCompany(
       { aliasName: new RegExp(search, 'i') },
     ];
   }
-  return LedgerAccount.find(filter).populate('groupId', 'name code type').sort({ code: 1 }).lean();
+  return LedgerAccount.find(filter).populate('groupId', 'name code type').sort({ code: 1 }).lean() as unknown as ILedgerAccount[];
 }
 
 export async function getById(ledgerAccountId: string, companyId: string): Promise<ILedgerAccount | null> {
-  return LedgerAccount.findOne({ _id: ledgerAccountId, companyId }).populate('groupId').lean();
+  return LedgerAccount.findOne({ _id: ledgerAccountId, companyId }).populate('groupId').lean() as unknown as ILedgerAccount | null;
 }
 
 export async function getNextCode(companyId: string, prefix: string): Promise<string> {
@@ -80,6 +83,13 @@ export async function create(input: CreateLedgerAccountInput): Promise<ILedgerAc
   const code = input.code || await getNextCode(input.companyId, input.type === 'Customer' ? 'CUST' : input.type === 'Supplier' ? 'SUP' : 'ACC');
   const existing = await LedgerAccount.findOne({ companyId: input.companyId, code });
   if (existing) throw new AppError('Code already exists', 400);
+
+  // Check for duplicate name (case-insensitive) within the same company
+  const duplicateName = await LedgerAccount.findOne({
+    companyId: input.companyId,
+    name: new RegExp(`^${input.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+  });
+  if (duplicateName) throw new AppError('Ledger account name already exists', 400);
 
   const openingBalances: IOpeningBalance[] = [];
   if (input.financialYearId && (Number(input.openingBalanceDr) > 0 || Number(input.openingBalanceCr) > 0)) {
@@ -156,6 +166,16 @@ export async function update(
   updates: Partial<Pick<ILedgerAccount, typeof updateableFields[number]>>,
   updatedBy?: string
 ): Promise<ILedgerAccount> {
+  // Check for duplicate name (case-insensitive) if name is being updated
+  if (updates.name) {
+    const duplicateName = await LedgerAccount.findOne({
+      companyId,
+      name: new RegExp(`^${updates.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+      _id: { $ne: ledgerAccountId },
+    });
+    if (duplicateName) throw new AppError('Ledger account name already exists', 400);
+  }
+
   const safe: Record<string, unknown> = {};
   for (const key of updateableFields) {
     if (updates[key] !== undefined) safe[key] = updates[key];
@@ -166,10 +186,41 @@ export async function update(
     { new: true }
   ).lean();
   if (!account) throw new AppError('Ledger account not found', 404);
-  return account as ILedgerAccount;
+  return account as unknown as ILedgerAccount;
 }
 
 export async function remove(ledgerAccountId: string, companyId: string): Promise<void> {
+  const ledgerObjectId = new mongoose.Types.ObjectId(ledgerAccountId);
+
+  // Check for ledger entries
+  const ledgerEntryCount = await LedgerEntry.countDocuments({ ledgerAccountId: ledgerObjectId });
+  if (ledgerEntryCount > 0) {
+    throw new AppError('Cannot delete ledger account. It has ledger entries associated with it.', 400);
+  }
+
+  // Check for sales invoices (as customer or cash account)
+  const salesInvoiceCount = await SalesInvoice.countDocuments({
+    $or: [
+      { customerId: ledgerObjectId },
+      { cashAccountId: ledgerObjectId },
+      { 'paymentDetails.accountId': ledgerObjectId },
+    ],
+  });
+  if (salesInvoiceCount > 0) {
+    throw new AppError('Cannot delete ledger account. It has sales invoices associated with it.', 400);
+  }
+
+  // Check for vouchers (in lines or as bank ledger)
+  const voucherCount = await Voucher.countDocuments({
+    $or: [
+      { 'lines.ledgerAccountId': ledgerObjectId },
+      { bankLedgerId: ledgerObjectId },
+    ],
+  });
+  if (voucherCount > 0) {
+    throw new AppError('Cannot delete ledger account. It has vouchers associated with it.', 400);
+  }
+
   const result = await LedgerAccount.deleteOne({ _id: ledgerAccountId, companyId });
   if (result.deletedCount === 0) throw new AppError('Ledger account not found', 404);
 }

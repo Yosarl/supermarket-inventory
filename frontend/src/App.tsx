@@ -5,6 +5,7 @@ import MainLayout from './layouts/MainLayout';
 import Dashboard from './pages/Dashboard';
 import CompanyCreate from './pages/CompanyCreate';
 import CompanyList from './pages/CompanyList';
+import CompanyDetails from './pages/CompanyDetails';
 import ProductList from './pages/ProductList';
 import ProductCreate from './pages/ProductCreate';
 import ProductManagement from './pages/ProductManagement';
@@ -20,8 +21,11 @@ import UserCreate from './pages/UserCreate';
 import UserCredentials from './pages/UserCredentials';
 import UserPermissions from './pages/UserPermissions';
 import CustomerList from './pages/CustomerList';
+import CustomerCreate from './pages/CustomerCreate';
 import SupplierList from './pages/SupplierList';
+import SupplierCreate from './pages/SupplierCreate';
 import LedgerAccountList from './pages/LedgerAccountList';
+import OtherLedgerCreate from './pages/OtherLedgerCreate';
 import GroupList from './pages/GroupList';
 import GroupCreate from './pages/GroupCreate';
 import ChartOfAccounts from './pages/ChartOfAccounts';
@@ -65,6 +69,7 @@ import RestoreShortcut from './pages/help/RestoreShortcut';
 import ImportOpeningStock from './pages/help/ImportOpeningStock';
 import UserGuide from './pages/help/UserGuide';
 import AboutSupport from './pages/help/AboutSupport';
+import SoftwareSettings from './pages/SoftwareSettings';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const token = useAppSelector((s) => s.auth.token);
@@ -88,20 +93,24 @@ export default function App() {
         <Route path="file">
           <Route path="companies" element={<CompanyList />} />
           <Route path="companies/create" element={<CompanyCreate />} />
+          <Route path="company-details" element={<CompanyDetails />} />
           <Route path="users" element={<UserList />} />
           <Route path="users/create" element={<UserCreate />} />
           <Route path="users/credentials" element={<UserCredentials />} />
           <Route path="users/permissions" element={<UserPermissions />} />
           <Route path="change-financial-year" element={<ChangeFinancialYear />} />
+          <Route path="software-settings" element={<SoftwareSettings />} />
         </Route>
         <Route path="master">
           <Route path="products" element={<ProductList />} />
           <Route path="products/create" element={<ProductCreate />} />
           <Route path="products/management" element={<ProductManagement />} />
           <Route path="customers" element={<CustomerList />} />
+          <Route path="customer-create" element={<CustomerCreate />} />
           <Route path="suppliers" element={<SupplierList />} />
+          <Route path="supplier-create" element={<SupplierCreate />} />
           <Route path="ledger-accounts" element={<LedgerAccountList />} />
-          <Route path="ledger-accounts/create" element={<Navigate to="/master/ledger-accounts" replace />} />
+          <Route path="other-ledger-create" element={<OtherLedgerCreate />} />
           <Route path="groups" element={<GroupList />} />
           <Route path="groups/create" element={<GroupCreate />} />
           <Route path="chart-of-accounts" element={<ChartOfAccounts />} />

@@ -21,7 +21,7 @@ export interface IUser extends Document {
 
 const UserSchema = new Schema<IUser>(
   {
-    username: { type: String, required: true, unique: true },
+    username: { type: String, required: true },
     fullName: { type: String, required: true },
     email: { type: String, required: true },
     phone: { type: String },
@@ -36,7 +36,7 @@ const UserSchema = new Schema<IUser>(
   { timestamps: true }
 );
 
-UserSchema.index({ username: 1 });
+UserSchema.index({ username: 1 }, { unique: true });
 UserSchema.index({ email: 1 });
 UserSchema.index({ companyAccess: 1 });
 

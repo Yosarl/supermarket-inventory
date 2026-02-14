@@ -3,19 +3,46 @@ import mongoose, { Document, Schema } from 'mongoose';
 export type ProductStatus = 'active' | 'inactive';
 export type VatCategory = 'standard' | 'zero' | 'exempt';
 
+export interface IMultiUnit {
+  multiUnitId: string;
+  imei: string;
+  conversion: number;
+  price: number;
+  totalPrice: number;
+  unitId: mongoose.Types.ObjectId;
+  wholesale?: number;
+  retail?: number;
+  specialPrice1?: number;
+  specialPrice2?: number;
+}
+
 export interface IProduct extends Document {
   companyId: mongoose.Types.ObjectId;
+  code: string;
   name: string;
+  imei?: string;
   sku: string;
   internationalBarcode?: string;
   systemBarcode: string;
+  itemGroup?: string;
+  brand?: string;
   categoryId?: mongoose.Types.ObjectId;
   defaultVendorId?: mongoose.Types.ObjectId;
+  vatPercent: number;
+  unitOfMeasureId: mongoose.Types.ObjectId;
+  retailPrice: number;
+  wholesalePrice: number;
   purchasePrice: number;
+  specialPrice?: number;
+  specialPrice2?: number;
+  expiryDate?: Date;
+  imageUrl?: string;
+  multiUnits: IMultiUnit[];
+  allowBatches?: boolean;
+  purchasePriceLegacy?: number;
   sellingPrice: number;
   mrp?: number;
   vatCategory: VatCategory;
-  unitOfMeasureId: mongoose.Types.ObjectId;
   minStockLevel?: number;
   reorderLevel?: number;
   batchTracking?: boolean;
@@ -27,20 +54,49 @@ export interface IProduct extends Document {
   updatedAt: Date;
 }
 
+const MultiUnitSchema = new Schema<IMultiUnit>(
+  { 
+    multiUnitId: { type: String, required: true },
+    imei: String, 
+    conversion: Number, 
+    price: Number,
+    totalPrice: { type: Number, default: 0 },
+    unitId: { type: Schema.Types.ObjectId, ref: 'UnitOfMeasure' },
+    wholesale: { type: Number },
+    retail: { type: Number },
+    specialPrice1: { type: Number },
+    specialPrice2: { type: Number },
+  },
+  { _id: false }
+);
+
 const ProductSchema = new Schema<IProduct>(
   {
     companyId: { type: Schema.Types.ObjectId, ref: 'Company', required: true },
+    code: { type: String },
     name: { type: String, required: true },
-    sku: { type: String, required: true },
+    imei: { type: String },
+    sku: { type: String },
     internationalBarcode: { type: String },
-    systemBarcode: { type: String, required: true },
+    systemBarcode: { type: String },
+    itemGroup: { type: String },
+    brand: { type: String },
     categoryId: { type: Schema.Types.ObjectId, ref: 'ProductCategory' },
     defaultVendorId: { type: Schema.Types.ObjectId, ref: 'LedgerAccount' },
+    vatPercent: { type: Number, default: 5 },
+    unitOfMeasureId: { type: Schema.Types.ObjectId, ref: 'UnitOfMeasure', required: true },
+    retailPrice: { type: Number, default: 0 },
+    wholesalePrice: { type: Number, default: 0 },
     purchasePrice: { type: Number, default: 0 },
+    specialPrice: { type: Number },
+    specialPrice2: { type: Number },
+    expiryDate: { type: Date },
+    imageUrl: { type: String },
+    multiUnits: { type: [MultiUnitSchema], default: [] },
+    allowBatches: { type: Boolean, default: true },
     sellingPrice: { type: Number, default: 0 },
     mrp: { type: Number },
     vatCategory: { type: String, enum: ['standard', 'zero', 'exempt'], default: 'standard' },
-    unitOfMeasureId: { type: Schema.Types.ObjectId, ref: 'UnitOfMeasure', required: true },
     minStockLevel: { type: Number },
     reorderLevel: { type: Number },
     batchTracking: { type: Boolean, default: false },
@@ -52,9 +108,12 @@ const ProductSchema = new Schema<IProduct>(
   { timestamps: true }
 );
 
+ProductSchema.index({ companyId: 1, code: 1 }, { unique: true });
+ProductSchema.index({ companyId: 1, name: 1 }, { unique: true });
+ProductSchema.index({ companyId: 1, imei: 1 }, { unique: true, sparse: true });
 ProductSchema.index({ companyId: 1, name: 'text' });
 ProductSchema.index({ companyId: 1, internationalBarcode: 1 }, { sparse: true });
-ProductSchema.index({ companyId: 1, systemBarcode: 1 }, { unique: true });
+ProductSchema.index({ companyId: 1, systemBarcode: 1 }, { sparse: true });
 ProductSchema.index({ companyId: 1, categoryId: 1 });
 ProductSchema.index({ companyId: 1, defaultVendorId: 1 });
 

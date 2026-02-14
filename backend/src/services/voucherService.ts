@@ -85,6 +85,13 @@ export async function createAndPost(
   return voucher.toObject();
 }
 
+export async function deleteVoucher(voucherId: string): Promise<void> {
+  // Delete associated ledger entries
+  await LedgerEntry.deleteMany({ voucherId });
+  // Delete the voucher itself
+  await Voucher.deleteOne({ _id: voucherId });
+}
+
 export async function list(
   companyId: string,
   financialYearId: string,
@@ -105,6 +112,6 @@ export async function list(
     .sort({ date: -1, voucherNo: -1 })
     .skip((page - 1) * limit)
     .limit(limit)
-    .lean();
+    .lean() as unknown as IVoucher[];
   return { vouchers, total };
 }

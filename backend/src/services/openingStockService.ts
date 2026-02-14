@@ -129,7 +129,8 @@ export async function importProductsAndOpeningStock(
   const company = await Company.findById(companyId);
   if (!company) throw new AppError('Company not found', 404);
 
-  const defaultUnit = await UnitOfMeasure.findOne({ companyId }).sort({ shortCode: 1 });
+  // Units are now global
+  const defaultUnit = await UnitOfMeasure.findOne({}).sort({ shortCode: 1 });
   if (!defaultUnit) throw new AppError('No unit of measure found. Create units first.', 400);
 
   const errors: string[] = [];

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
-import { Box, Button, TextField, Typography, Paper, Grid, MenuItem, FormControlLabel, Checkbox, InputLabel, FormControl, Select } from '@mui/material';
+import { Box, Button, TextField, Typography, Paper, Grid, MenuItem, FormControlLabel, Checkbox, InputLabel, FormControl, Select, Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material';
 import { userApi, companyApi } from '../services/api';
 
 type Company = { _id: string; name: string };
@@ -9,6 +9,8 @@ type Company = { _id: string; name: string };
 export default function UserCreate() {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [companyAccess, setCompanyAccess] = useState<string[]>([]);
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false);
+  const [errorDialogMessage, setErrorDialogMessage] = useState('');
   const navigate = useNavigate();
   const { register, handleSubmit, formState: { errors } } = useForm();
   useEffect(() => {
@@ -18,18 +20,23 @@ export default function UserCreate() {
   const roleOptions = ['Admin', 'Accountant', 'Sales', 'Inventory Manager', 'POS Cashier'];
 
   const onSubmit = async (data: Record<string, unknown>) => {
-    const selectedRoles = roleOptions.filter((_, i) => (data[`role_${i}`] as boolean));
-    await userApi.create({
-      username: data.username,
-      fullName: data.fullName,
-      email: data.email,
-      phone: data.phone,
-      password: data.password,
-      roles: selectedRoles,
-      permissions: ['*'],
-      companyAccess: companyAccess,
-    });
-    navigate('/file/users');
+    try {
+      const selectedRoles = roleOptions.filter((_, i) => (data[`role_${i}`] as boolean));
+      await userApi.create({
+        username: data.username,
+        fullName: data.fullName,
+        email: data.email,
+        phone: data.phone,
+        password: data.password,
+        roles: selectedRoles,
+        permissions: ['*'],
+        companyAccess: companyAccess,
+      });
+      navigate('/file/users');
+    } catch (err: any) {
+      setErrorDialogMessage(err.response?.data?.message || 'Save failed');
+      setErrorDialogOpen(true);
+    }
   };
 
   return (
@@ -61,6 +68,17 @@ export default function UserCreate() {
           <Box sx={{ mt: 3 }}><Button type="submit" variant="contained">Create</Button><Button type="button" onClick={() => navigate('/file/users')} sx={{ ml: 2 }}>Cancel</Button></Box>
         </form>
       </Paper>
+
+      {/* Error Dialog */}
+      <Dialog open={errorDialogOpen} onClose={() => setErrorDialogOpen(false)} PaperProps={{ sx: { borderRadius: 2, minWidth: 350 } }}>
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#dc2626' }}>Error</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>{errorDialogMessage}</Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button variant="contained" onClick={() => setErrorDialogOpen(false)} autoFocus sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#dc2626', '&:hover': { bgcolor: '#b91c1c' }, boxShadow: 'none' }}>OK</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

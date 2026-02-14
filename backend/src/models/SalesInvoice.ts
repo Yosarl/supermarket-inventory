@@ -2,11 +2,15 @@ import mongoose, { Document, Schema } from 'mongoose';
 
 export type SalesInvoiceType = 'POS' | 'B2C' | 'B2B' | 'Quotation' | 'Return';
 export type SalesInvoiceStatus = 'Draft' | 'Final' | 'Cancelled' | 'Returned';
+export type PaymentType = 'Cash' | 'Credit';
+export type VatType = 'Vat' | 'NonVat';
+export type RateType = 'Retail' | 'WSale' | 'Special1' | 'Special2';
 
 export interface IPaymentDetail {
   mode: string;
   amount: number;
   reference?: string;
+  accountId?: mongoose.Types.ObjectId;
 }
 
 export interface ISalesInvoice extends Document {
@@ -18,13 +22,36 @@ export interface ISalesInvoice extends Document {
   type: SalesInvoiceType;
   customerId?: mongoose.Types.ObjectId;
   customerName?: string;
+  customerAddress?: string;
+  customerPhone?: string;
   customerTRN?: string;
+  salesmanId?: mongoose.Types.ObjectId;
+  locationId?: mongoose.Types.ObjectId;
+  rateType: RateType;
+  paymentType: PaymentType;
+  vatType: VatType;
+  cashAccountId?: mongoose.Types.ObjectId;
   grossAmount: number;
   discountAmount: number;
   taxableAmount: number;
   vatAmount: number;
+  otherDiscount: number;
+  otherCharges: number;
+  freightCharge: number;
+  lendAddLess: number;
+  roundOff: number;
   totalAmount: number;
+  cashReceived: number;
+  balance: number;
+  oldBalance: number;
+  netBalance: number;
   paymentDetails: IPaymentDetail[];
+  narration?: string;
+  // Shipping Address
+  shippingName?: string;
+  shippingAddress?: string;
+  shippingPhone?: string;
+  shippingContactPerson?: string;
   status: SalesInvoiceStatus;
   voucherId?: mongoose.Types.ObjectId;
   originalInvoiceId?: mongoose.Types.ObjectId;
@@ -35,7 +62,7 @@ export interface ISalesInvoice extends Document {
 }
 
 const PaymentDetailSchema = new Schema<IPaymentDetail>(
-  { mode: String, amount: Number, reference: String },
+  { mode: String, amount: Number, reference: String, accountId: { type: Schema.Types.ObjectId, ref: 'LedgerAccount' } },
   { _id: false }
 );
 
@@ -49,13 +76,36 @@ const SalesInvoiceSchema = new Schema<ISalesInvoice>(
     type: { type: String, enum: ['POS', 'B2C', 'B2B', 'Quotation', 'Return'], required: true },
     customerId: { type: Schema.Types.ObjectId, ref: 'LedgerAccount' },
     customerName: { type: String },
+    customerAddress: { type: String },
+    customerPhone: { type: String },
     customerTRN: { type: String },
+    salesmanId: { type: Schema.Types.ObjectId, ref: 'User' },
+    locationId: { type: Schema.Types.ObjectId, ref: 'Location' },
+    rateType: { type: String, enum: ['Retail', 'WSale', 'Special1', 'Special2'], default: 'Retail' },
+    paymentType: { type: String, enum: ['Cash', 'Credit'], default: 'Cash' },
+    vatType: { type: String, enum: ['Vat', 'NonVat'], default: 'Vat' },
+    cashAccountId: { type: Schema.Types.ObjectId, ref: 'LedgerAccount' },
     grossAmount: { type: Number, default: 0 },
     discountAmount: { type: Number, default: 0 },
     taxableAmount: { type: Number, default: 0 },
     vatAmount: { type: Number, default: 0 },
+    otherDiscount: { type: Number, default: 0 },
+    otherCharges: { type: Number, default: 0 },
+    freightCharge: { type: Number, default: 0 },
+    lendAddLess: { type: Number, default: 0 },
+    roundOff: { type: Number, default: 0 },
     totalAmount: { type: Number, default: 0 },
+    cashReceived: { type: Number, default: 0 },
+    balance: { type: Number, default: 0 },
+    oldBalance: { type: Number, default: 0 },
+    netBalance: { type: Number, default: 0 },
     paymentDetails: [PaymentDetailSchema],
+    narration: { type: String },
+    // Shipping Address
+    shippingName: { type: String },
+    shippingAddress: { type: String },
+    shippingPhone: { type: String },
+    shippingContactPerson: { type: String },
     status: { type: String, enum: ['Draft', 'Final', 'Cancelled', 'Returned'], default: 'Draft' },
     voucherId: { type: Schema.Types.ObjectId, ref: 'Voucher' },
     originalInvoiceId: { type: Schema.Types.ObjectId, ref: 'SalesInvoice' },

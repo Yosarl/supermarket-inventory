@@ -1,6 +1,10 @@
+import path from 'path';
 import dotenv from 'dotenv';
 
-dotenv.config();
+// When launched from Electron's utilityProcess, BACKEND_CWD points to the
+// backend directory so dotenv can find .env even without a matching cwd.
+const baseDir = process.env.BACKEND_CWD || process.cwd();
+dotenv.config({ path: path.join(baseDir, '.env') });
 
 export const config = {
   nodeEnv: process.env.NODE_ENV || 'development',

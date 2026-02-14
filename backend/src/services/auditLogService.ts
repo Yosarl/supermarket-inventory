@@ -22,6 +22,6 @@ export async function list(
     .sort({ timestamp: -1 })
     .skip((page - 1) * limit)
     .limit(limit)
-    .lean();
+    .lean() as unknown as IAuditLog[];
   return { logs, total };
 }

@@ -31,7 +31,7 @@ export async function login(
     throw new AppError('Invalid username or password', 401);
   }
   const payload: JwtPayload = { userId: user._id.toString(), username: user.username };
-  const token = jwt.sign(payload, config.jwt.secret, { expiresIn: config.jwt.expiresIn });
+  const token = jwt.sign(payload, config.jwt.secret, { expiresIn: config.jwt.expiresIn as string & jwt.SignOptions['expiresIn'] });
   await AuditLog.create({
     userId: user._id,
     action: 'Login',

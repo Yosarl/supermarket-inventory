@@ -6,8 +6,8 @@ import { ledgerApi, ledgerAccountApi } from '../services/api';
 export default function LedgerReport() {
   const [accounts, setAccounts] = useState<Array<{ _id: string; name: string; code: string }>>([]);
   const [selectedAccountId, setSelectedAccountId] = useState('');
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
+  const [fromDate, setFromDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [data, setData] = useState<{ openingBalance: number; openingIsDebit: boolean; transactions: Array<{ date: string; voucherNo?: string; debit: number; credit: number; balance: number; balanceIsDebit: boolean }>; closingBalance: number; closingIsDebit: boolean } | null>(null);
   const [loading, setLoading] = useState(false);
   const companyId = useAppSelector((s) => s.app.selectedCompanyId);

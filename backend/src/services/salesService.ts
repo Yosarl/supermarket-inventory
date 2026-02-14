@@ -5,10 +5,96 @@ import { InventoryTransaction } from '../models/InventoryTransaction';
 import { Product } from '../models/Product';
 import { Company } from '../models/Company';
 import { LedgerAccount } from '../models/LedgerAccount';
+import { LedgerGroup } from '../models/LedgerGroup';
 import { Voucher } from '../models/Voucher';
 import { AppError } from '../middlewares/errorHandler';
 import * as ledgerService from './ledgerService';
 import * as voucherService from './voucherService';
+
+/**
+ * Find or auto-create a LedgerGroup by type.
+ */
+async function findOrCreateGroup(companyId: string, type: string) {
+  let group = await LedgerGroup.findOne({ companyId, type });
+  if (group) return group;
+  const lastGrp = await LedgerGroup.findOne({ companyId, code: /^GRP/ }).sort({ code: -1 }).lean();
+  const num = lastGrp?.code ? parseInt(lastGrp.code.replace(/\D/g, ''), 10) + 1 : 1;
+  const code = `GRP${num.toString().padStart(4, '0')}`;
+  group = await LedgerGroup.create({ companyId, name: `${type} Group`, code, type });
+  console.log(`[Auto-created] ${type} Group: ${code}`);
+  return group;
+}
+
+/**
+ * Find or auto-create the "Sales Account" ledger.
+ */
+async function findOrCreateSalesLedger(companyId: string) {
+  let ledger = await LedgerAccount.findOne({ companyId, name: 'Sales Account' });
+  if (ledger) return ledger;
+  // Match exact "Sales" or "Sales Account" only (not "Sales Returns" etc.)
+  ledger = await LedgerAccount.findOne({ companyId, name: /^sales\s*account$/i });
+  if (ledger) return ledger;
+  ledger = await LedgerAccount.findOne({ companyId, type: 'Revenue', name: /^sales$/i });
+  if (ledger) return ledger;
+  // Auto-create
+  const group = await findOrCreateGroup(companyId, 'Income');
+  const lastAcc = await LedgerAccount.findOne({ companyId, code: /^ACC/ }).sort({ code: -1 }).lean();
+  const num = lastAcc?.code ? parseInt(lastAcc.code.replace(/\D/g, ''), 10) + 1 : 1;
+  const code = `ACC${num.toString().padStart(4, '0')}`;
+  ledger = await LedgerAccount.create({
+    companyId, name: 'Sales Account', code, type: 'Revenue',
+    groupId: group._id,
+  });
+  console.log(`[Auto-created] Sales Account ledger: ${code}`);
+  return ledger;
+}
+
+/**
+ * Find or auto-create the "VAT Payable" ledger.
+ */
+async function findOrCreateVatLedger(companyId: string) {
+  let ledger = await LedgerAccount.findOne({ companyId, name: 'VAT Payable' });
+  if (ledger) return ledger;
+  // Match "VAT Payable" or "VAT Output" only (not "VAT Input" / "VAT Receivable" etc.)
+  ledger = await LedgerAccount.findOne({ companyId, name: /^vat\s*(payable|output)$/i });
+  if (ledger) return ledger;
+  // Auto-create
+  const group = await findOrCreateGroup(companyId, 'Liability');
+  const lastAcc = await LedgerAccount.findOne({ companyId, code: /^ACC/ }).sort({ code: -1 }).lean();
+  const num = lastAcc?.code ? parseInt(lastAcc.code.replace(/\D/g, ''), 10) + 1 : 1;
+  const code = `ACC${num.toString().padStart(4, '0')}`;
+  ledger = await LedgerAccount.create({
+    companyId, name: 'VAT Payable', code, type: 'Other',
+    groupId: group._id,
+  });
+  console.log(`[Auto-created] VAT Payable ledger: ${code}`);
+  return ledger;
+}
+
+/**
+ * Generic helper: find or auto-create a ledger account by exact name.
+ */
+async function findOrCreateSpecialLedger(
+  companyId: string,
+  name: string,
+  type: 'Revenue' | 'Expense' | 'Other',
+  groupType: string,
+) {
+  let ledger = await LedgerAccount.findOne({ companyId, name });
+  if (ledger) return ledger;
+  // Case-insensitive fallback
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  ledger = await LedgerAccount.findOne({ companyId, name: new RegExp(`^${escaped}$`, 'i') });
+  if (ledger) return ledger;
+  // Auto-create
+  const group = await findOrCreateGroup(companyId, groupType);
+  const lastAcc = await LedgerAccount.findOne({ companyId, code: /^ACC/ }).sort({ code: -1 }).lean();
+  const num = lastAcc?.code ? parseInt(lastAcc.code.replace(/\D/g, ''), 10) + 1 : 1;
+  const code = `ACC${num.toString().padStart(4, '0')}`;
+  ledger = await LedgerAccount.create({ companyId, name, code, type, groupId: group._id });
+  console.log(`[Auto-created] ${name} ledger: ${code}`);
+  return ledger;
+}
 
 export interface POSLineItem {
   productId: string;
@@ -50,7 +136,10 @@ export async function getNextInvoiceNo(
   const last = await SalesInvoice.findOne({ companyId, financialYearId, type })
     .sort({ invoiceNo: -1 })
     .lean();
-  const num = last?.invoiceNo ? parseInt(last.invoiceNo.replace(/\D/g, ''), 10) + 1 : 1;
+  if (!last?.invoiceNo) return `${prefix}-000001`;
+  // Extract only the numeric part after the dash
+  const match = last.invoiceNo.match(/-(\d+)$/);
+  const num = match ? parseInt(match[1], 10) + 1 : 1;
   return `${prefix}-${num.toString().padStart(6, '0')}`;
 }
 
@@ -151,14 +240,8 @@ export async function createPOSSale(input: CreatePOSSaleInput): Promise<{ invoic
     companyId: input.companyId,
     type: 'Cash',
   });
-  const salesLedger = await LedgerAccount.findOne({
-    companyId: input.companyId,
-    code: /SALES/i,
-  });
-  const vatLedger = await LedgerAccount.findOne({
-    companyId: input.companyId,
-    name: /VAT|Output/i,
-  });
+  const salesLedger = await findOrCreateSalesLedger(input.companyId);
+  const vatLedger = await findOrCreateVatLedger(input.companyId);
 
   const voucherLines: Array<{ ledgerAccountId: string; debitAmount: number; creditAmount: number; narration?: string }> = [];
   if (cashLedger) {
@@ -241,6 +324,1121 @@ export async function getInvoice(invoiceId: string, companyId: string) {
     .populate('customerId', 'name code')
     .lean();
   if (!invoice) return null;
-  const items = await SalesInvoiceItem.find({ invoiceId }).populate('productId', 'name sku systemBarcode').lean();
+  const items = await SalesInvoiceItem.find({ invoiceId }).populate('productId', 'name sku systemBarcode code imei').lean();
   return { ...invoice, items };
+}
+
+// ==================== B2C Sales ====================
+
+export interface B2CLineItem {
+  productId: string;
+  productCode?: string;
+  imei?: string;
+  multiUnitId?: string;
+  unitId?: string;
+  unitName?: string;
+  description?: string;
+  quantity: number;
+  unitPrice: number;
+  discountPercent?: number;
+  discount?: number;
+  vatRate?: number;
+}
+
+export interface B2CPayment {
+  mode: string;
+  amount: number;
+  reference?: string;
+  accountId?: string;
+}
+
+export interface CreateB2CSaleInput {
+  companyId: string;
+  financialYearId: string;
+  date?: string;
+  items: B2CLineItem[];
+  customerId?: string;
+  customerName?: string;
+  customerAddress?: string;
+  customerPhone?: string;
+  salesmanId?: string;
+  rateType?: 'Retail' | 'WSale' | 'Special1' | 'Special2';
+  paymentType?: 'Cash' | 'Credit';
+  vatType?: 'Vat' | 'NonVat';
+  cashAccountId?: string;
+  otherDiscount?: number;
+  otherCharges?: number;
+  freightCharge?: number;
+  lendAddLess?: number;
+  roundOff?: number;
+  cashReceived?: number;
+  oldBalance?: number;
+  paymentDetails?: B2CPayment[];
+  narration?: string;
+  // Shipping Address
+  shippingName?: string;
+  shippingAddress?: string;
+  shippingPhone?: string;
+  shippingContactPerson?: string;
+  createdBy?: string;
+}
+
+export async function getNextB2CInvoiceNo(companyId: string, financialYearId: string): Promise<string> {
+  const prefix = 'B2C';
+  const last = await SalesInvoice.findOne({ companyId, financialYearId, type: 'B2C' })
+    .sort({ invoiceNo: -1 })
+    .lean();
+  if (!last?.invoiceNo) return `${prefix}-000001`;
+  // Extract only the numeric part after the dash
+  const match = last.invoiceNo.match(/-(\d+)$/);
+  const num = match ? parseInt(match[1], 10) + 1 : 1;
+  return `${prefix}-${num.toString().padStart(6, '0')}`;
+}
+
+export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoiceId: string; invoiceNo: string }> {
+  const company = await Company.findById(input.companyId);
+  if (!company) throw new AppError('Company not found', 404);
+  
+  const vatRatePct = input.vatType === 'NonVat' ? 0 : (company.vatConfig?.standardRate ?? 5);
+  const saleDate = input.date ? new Date(input.date) : new Date();
+
+  let itemsGross = 0;
+  let itemsDiscount = 0;
+  let itemsVat = 0;
+  
+  const lineItems: Array<{
+    productId: mongoose.Types.ObjectId;
+    productCode: string;
+    imei: string;
+    multiUnitId?: string;
+    unitId?: string;
+    unitName?: string;
+    description: string;
+    quantity: number;
+    unitPrice: number;
+    grossAmount: number;
+    discountPercent: number;
+    discount: number;
+    netAmount: number;
+    vatRate: number;
+    vatAmount: number;
+    totalAmount: number;
+    costPriceAtSale: number;
+  }> = [];
+
+  // Track cumulative stock consumed per product across all line items in this invoice
+  const usedStockMap = new Map<string, number>();
+
+  for (const item of input.items) {
+    const product = await Product.findById(item.productId).lean();
+    if (!product || product.companyId.toString() !== input.companyId) {
+      throw new AppError(`Product not found: ${item.productId}`, 404);
+    }
+
+    // Check available stock before allowing sale
+    const pid = product._id.toString();
+    const stockAgg = await InventoryTransaction.aggregate([
+      {
+        $match: {
+          companyId: new mongoose.Types.ObjectId(input.companyId),
+          productId: product._id,
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalIn: { $sum: '$quantityIn' },
+          totalOut: { $sum: '$quantityOut' },
+        },
+      },
+    ]);
+    const totalAvailable = stockAgg.length > 0 ? stockAgg[0].totalIn - stockAgg[0].totalOut : 0;
+    const alreadyUsed = usedStockMap.get(pid) ?? 0;
+    const remainingStock = totalAvailable - alreadyUsed;
+
+    // For multi-unit sales, the actual stock consumed is qty * conversion
+    let requiredStock = item.quantity;
+    if (item.multiUnitId && product.multiUnits) {
+      const mu = product.multiUnits.find((m) => m.multiUnitId === item.multiUnitId);
+      if (mu && mu.conversion && mu.conversion > 0) {
+        requiredStock = item.quantity * mu.conversion;
+      }
+    }
+
+    if (remainingStock < requiredStock) {
+      throw new AppError(
+        `Insufficient stock for "${product.name}". Available: ${remainingStock}, Required: ${requiredStock}`,
+        400
+      );
+    }
+
+    // Track what this line consumes
+    usedStockMap.set(pid, alreadyUsed + requiredStock);
+    
+    const qty = item.quantity;
+    const price = item.unitPrice;
+    const gross = qty * price;
+    const discPct = item.discountPercent ?? 0;
+    const disc = item.discount ?? (gross * discPct / 100);
+    const net = gross - disc;
+    const vatRate = input.vatType === 'NonVat' ? 0 : (item.vatRate ?? vatRatePct);
+    const vatAmt = net * (vatRate / 100);
+    const total = net + vatAmt;
+    
+    itemsGross += gross;
+    itemsDiscount += disc;
+    itemsVat += vatAmt;
+    
+    lineItems.push({
+      productId: product._id,
+      productCode: item.productCode ?? product.code ?? '',
+      imei: item.imei ?? product.imei ?? '',
+      multiUnitId: item.multiUnitId,
+      unitId: item.unitId,
+      unitName: item.unitName,
+      description: item.description ?? product.name,
+      quantity: qty,
+      unitPrice: price,
+      grossAmount: gross,
+      discountPercent: discPct,
+      discount: disc,
+      netAmount: net,
+      vatRate,
+      vatAmount: vatAmt,
+      totalAmount: total,
+      costPriceAtSale: product.purchasePrice ?? 0,
+    });
+  }
+
+  const otherDiscount = input.otherDiscount ?? 0;
+  const otherCharges = input.otherCharges ?? 0;
+  const freightCharge = input.freightCharge ?? 0;
+  const lendAddLess = input.lendAddLess ?? 0;
+  const roundOff = input.roundOff ?? 0;
+  
+  const taxableAmount = itemsGross - itemsDiscount;
+  const subTotal = taxableAmount + itemsVat;
+  const grandTotal = subTotal - otherDiscount + otherCharges + freightCharge + lendAddLess + roundOff;
+  
+  const cashReceived = input.cashReceived ?? (input.paymentType === 'Cash' ? grandTotal : 0);
+  const balance = grandTotal - cashReceived;
+  const oldBalance = 0; // Could be fetched from customer account
+  const netBalance = balance + oldBalance;
+
+  const invoiceNo = await getNextB2CInvoiceNo(input.companyId, input.financialYearId);
+
+  // Create invoice, items, and inventory in a single flow with rollback on failure
+  let invoice: { _id: mongoose.Types.ObjectId; invoiceNo: string } | null = null;
+  try {
+    const created = await SalesInvoice.create({
+      companyId: input.companyId,
+      financialYearId: input.financialYearId,
+      invoiceNo,
+      date: saleDate,
+      time: saleDate.toTimeString().slice(0, 8),
+      type: 'B2C',
+      customerId: input.customerId,
+      customerName: input.customerName ?? 'Walk-in',
+      customerAddress: input.customerAddress,
+      customerPhone: input.customerPhone,
+      salesmanId: input.salesmanId,
+      rateType: input.rateType ?? 'Retail',
+      paymentType: input.paymentType ?? 'Cash',
+      vatType: input.vatType ?? 'Vat',
+      cashAccountId: input.cashAccountId,
+      grossAmount: itemsGross,
+      discountAmount: itemsDiscount,
+      taxableAmount,
+      vatAmount: itemsVat,
+      otherDiscount,
+      otherCharges,
+      freightCharge,
+      lendAddLess,
+      roundOff,
+      totalAmount: grandTotal,
+      cashReceived,
+      balance,
+      oldBalance,
+      netBalance,
+      paymentDetails: input.paymentDetails ?? [],
+      narration: input.narration,
+      // Shipping Address
+      shippingName: input.shippingName,
+      shippingAddress: input.shippingAddress,
+      shippingPhone: input.shippingPhone,
+      shippingContactPerson: input.shippingContactPerson,
+      status: 'Final',
+      createdBy: input.createdBy,
+    });
+    invoice = { _id: created._id, invoiceNo: created.invoiceNo };
+
+    for (const line of lineItems) {
+      await SalesInvoiceItem.create({
+        invoiceId: invoice._id,
+        productId: line.productId,
+        productCode: line.productCode,
+        imei: line.imei,
+        multiUnitId: line.multiUnitId,
+        unitId: line.unitId,
+        unitName: line.unitName,
+        description: line.description,
+        quantity: line.quantity,
+        unitPrice: line.unitPrice,
+        grossAmount: line.grossAmount,
+        discountPercent: line.discountPercent,
+        discount: line.discount,
+        netAmount: line.netAmount,
+        vatRate: line.vatRate,
+        vatAmount: line.vatAmount,
+        totalAmount: line.totalAmount,
+        costPriceAtSale: line.costPriceAtSale,
+      });
+    }
+
+    // Create inventory transactions
+    for (const line of lineItems) {
+      // For multi-unit sales, reduce stock by conversion (pcs inside) instead of line qty
+      let stockQtyOut = line.quantity;
+      if (line.multiUnitId) {
+        const prod = await Product.findById(line.productId).lean();
+        if (prod && prod.multiUnits) {
+          const mu = prod.multiUnits.find((m) => m.multiUnitId === line.multiUnitId);
+          if (mu && mu.conversion && mu.conversion > 0) {
+            stockQtyOut = line.quantity * mu.conversion;
+          }
+        }
+      }
+
+      await InventoryTransaction.create({
+        companyId: input.companyId,
+        financialYearId: input.financialYearId,
+        productId: line.productId,
+        date: saleDate,
+        type: 'Sales',
+        quantityIn: 0,
+        quantityOut: stockQtyOut,
+        costPrice: line.costPriceAtSale,
+        referenceType: 'SalesInvoice',
+        referenceId: invoice._id,
+        createdBy: input.createdBy,
+      });
+    }
+  } catch (err) {
+    // Rollback: clean up any partially created records
+    if (invoice) {
+      await SalesInvoiceItem.deleteMany({ invoiceId: invoice._id }).catch(() => {});
+      await InventoryTransaction.deleteMany({ referenceId: invoice._id, referenceType: 'SalesInvoice' }).catch(() => {});
+      await SalesInvoice.deleteOne({ _id: invoice._id }).catch(() => {});
+    }
+    throw err;
+  }
+
+  // ── Create accounting entries ─────────────────────────────────────
+  console.log(`[B2C ${invoiceNo}] Accounting: itemsGross=${itemsGross}, itemsDiscount=${itemsDiscount}, itemsVat=${itemsVat}, otherDiscount=${otherDiscount}, otherCharges=${otherCharges}, freightCharge=${freightCharge}, lendAddLess=${lendAddLess}, roundOff=${roundOff}, grandTotal=${grandTotal}`);
+
+  const cashLedger = input.cashAccountId 
+    ? await LedgerAccount.findById(input.cashAccountId)
+    : await LedgerAccount.findOne({ companyId: input.companyId, type: 'Cash' });
+  
+  const salesLedger = await findOrCreateSalesLedger(input.companyId);
+  const vatLedger = await findOrCreateVatLedger(input.companyId);
+  const customerLedger = input.customerId ? await LedgerAccount.findById(input.customerId) : null;
+  const cardTotal = (input.paymentDetails ?? []).reduce((s, pd) => s + (pd.amount || 0), 0);
+
+  // Look up special ledger accounts (only when the amount is non-zero)
+  const discountOnSalesLedger = itemsDiscount > 0
+    ? await findOrCreateSpecialLedger(input.companyId, 'Discount on Sales', 'Expense', 'Expense') : null;
+  const otherDiscountLedger = otherDiscount > 0
+    ? await findOrCreateSpecialLedger(input.companyId, 'Other Discount on Sales', 'Expense', 'Expense') : null;
+  const otherChargesLedger = otherCharges > 0
+    ? await findOrCreateSpecialLedger(input.companyId, 'Other Charges on Sales', 'Revenue', 'Income') : null;
+  const freightChargesLedger = freightCharge > 0
+    ? await findOrCreateSpecialLedger(input.companyId, 'Freight Charges on Sales', 'Revenue', 'Income') : null;
+  const travelChargesLedger = lendAddLess > 0
+    ? await findOrCreateSpecialLedger(input.companyId, 'Travel Charges on Sales', 'Revenue', 'Income') : null;
+  const roundOffLedger = Math.abs(roundOff) > 0.001
+    ? await findOrCreateSpecialLedger(input.companyId, 'Round Off on Sales', 'Expense', 'Expense') : null;
+
+  const voucherLines: Array<{ ledgerAccountId: string; debitAmount: number; creditAmount: number; narration?: string }> = [];
+
+  /** Helper: push the shared credit/debit lines for discounts, charges, round-off */
+  const pushSpecialLines = () => {
+    // Debit: Discount on Sales (sum of all row-level discounts)
+    if (discountOnSalesLedger && itemsDiscount > 0) {
+      voucherLines.push({
+        ledgerAccountId: discountOnSalesLedger._id.toString(),
+        debitAmount: itemsDiscount,
+        creditAmount: 0,
+        narration: `B2C ${invoiceNo} - Row Discounts`,
+      });
+    }
+    // Debit: Other Discount on Sales
+    if (otherDiscountLedger && otherDiscount > 0) {
+      voucherLines.push({
+        ledgerAccountId: otherDiscountLedger._id.toString(),
+        debitAmount: otherDiscount,
+        creditAmount: 0,
+        narration: `B2C ${invoiceNo} - Other Discount`,
+      });
+    }
+    // Credit: Other Charges on Sales
+    if (otherChargesLedger && otherCharges > 0) {
+      voucherLines.push({
+        ledgerAccountId: otherChargesLedger._id.toString(),
+        debitAmount: 0,
+        creditAmount: otherCharges,
+        narration: `B2C ${invoiceNo} - Other Charges`,
+      });
+    }
+    // Credit: Freight Charges on Sales
+    if (freightChargesLedger && freightCharge > 0) {
+      voucherLines.push({
+        ledgerAccountId: freightChargesLedger._id.toString(),
+        debitAmount: 0,
+        creditAmount: freightCharge,
+        narration: `B2C ${invoiceNo} - Freight Charges`,
+      });
+    }
+    // Credit: Travel Charges on Sales
+    if (travelChargesLedger && lendAddLess > 0) {
+      voucherLines.push({
+        ledgerAccountId: travelChargesLedger._id.toString(),
+        debitAmount: 0,
+        creditAmount: lendAddLess,
+        narration: `B2C ${invoiceNo} - Travel Charges`,
+      });
+    }
+    // Round Off on Sales (debit if negative, credit if positive)
+    if (roundOffLedger && Math.abs(roundOff) > 0.001) {
+      voucherLines.push({
+        ledgerAccountId: roundOffLedger._id.toString(),
+        debitAmount: roundOff < 0 ? Math.abs(roundOff) : 0,
+        creditAmount: roundOff > 0 ? roundOff : 0,
+        narration: `B2C ${invoiceNo} - Round Off`,
+      });
+    }
+  };
+
+  const hasCustomerAc = !!customerLedger;
+  const isCashPayment = input.paymentType !== 'Credit';
+
+  if (hasCustomerAc) {
+    // ── Customer A/C selected ──
+    // Step 1: Debit Customer A/C with Grand Total (record sale to customer)
+    voucherLines.push({
+      ledgerAccountId: customerLedger!._id.toString(),
+      debitAmount: grandTotal,
+      creditAmount: 0,
+      narration: `B2C ${invoiceNo} - Sale`,
+    });
+
+    // Credit: Sales A/C with GROSS amount (before discounts)
+    if (salesLedger) {
+      voucherLines.push({
+        ledgerAccountId: salesLedger._id.toString(),
+        debitAmount: 0,
+        creditAmount: itemsGross,
+        narration: `B2C ${invoiceNo}`,
+      });
+    }
+
+    // Credit: VAT A/C
+    if (vatLedger && itemsVat > 0) {
+      voucherLines.push({
+        ledgerAccountId: vatLedger._id.toString(),
+        debitAmount: 0,
+        creditAmount: itemsVat,
+        narration: `B2C ${invoiceNo}`,
+      });
+    }
+
+    // Discount, Charges & Round-off entries
+    pushSpecialLines();
+
+    if (isCashPayment) {
+      // Step 2: Payment entries — settle customer account
+      // Card payment: Debit Card A/C, Credit Customer A/C
+      if (input.paymentDetails && input.paymentDetails.length > 0) {
+        for (const pd of input.paymentDetails) {
+          if (pd.amount > 0 && pd.accountId) {
+            voucherLines.push({
+              ledgerAccountId: pd.accountId,
+              debitAmount: pd.amount,
+              creditAmount: 0,
+              narration: `B2C ${invoiceNo} - ${pd.mode} Payment`,
+            });
+            voucherLines.push({
+              ledgerAccountId: customerLedger!._id.toString(),
+              debitAmount: 0,
+              creditAmount: pd.amount,
+              narration: `B2C ${invoiceNo} - ${pd.mode} Payment`,
+            });
+          }
+        }
+      }
+
+      // Cash payment: Debit Cash A/C, Credit Customer A/C with remaining amount
+      const cashPayment = grandTotal - cardTotal;
+      if (cashLedger && cashPayment > 0) {
+        voucherLines.push({
+          ledgerAccountId: cashLedger._id.toString(),
+          debitAmount: cashPayment,
+          creditAmount: 0,
+          narration: `B2C ${invoiceNo} - Cash Payment`,
+        });
+        voucherLines.push({
+          ledgerAccountId: customerLedger!._id.toString(),
+          debitAmount: 0,
+          creditAmount: cashPayment,
+          narration: `B2C ${invoiceNo} - Cash Payment`,
+        });
+      }
+    }
+    // If Credit payment: no payment entries — balance stays in customer A/C
+  } else {
+    // ── CASH customer (no customer A/C) ──
+    // Debit: Cash A/C for cash portion
+    const cashPortion = grandTotal - cardTotal;
+    if (cashLedger && cashPortion > 0) {
+      voucherLines.push({
+        ledgerAccountId: cashLedger._id.toString(),
+        debitAmount: cashPortion,
+        creditAmount: 0,
+        narration: `B2C ${invoiceNo}`,
+      });
+    }
+
+    // Debit: Card A/C for card payment
+    if (input.paymentDetails && input.paymentDetails.length > 0) {
+      for (const pd of input.paymentDetails) {
+        if (pd.amount > 0 && pd.accountId) {
+          voucherLines.push({
+            ledgerAccountId: pd.accountId,
+            debitAmount: pd.amount,
+            creditAmount: 0,
+            narration: `B2C ${invoiceNo} - ${pd.mode}`,
+          });
+        }
+      }
+    }
+
+    // Credit: Sales A/C with GROSS amount (before discounts)
+    if (salesLedger) {
+      voucherLines.push({
+        ledgerAccountId: salesLedger._id.toString(),
+        debitAmount: 0,
+        creditAmount: itemsGross,
+        narration: `B2C ${invoiceNo}`,
+      });
+    }
+
+    // Credit: VAT A/C
+    if (vatLedger && itemsVat > 0) {
+      voucherLines.push({
+        ledgerAccountId: vatLedger._id.toString(),
+        debitAmount: 0,
+        creditAmount: itemsVat,
+        narration: `B2C ${invoiceNo}`,
+      });
+    }
+
+    // Discount, Charges & Round-off entries
+    pushSpecialLines();
+  }
+
+  console.log(`[B2C ${invoiceNo}] Voucher lines (${voucherLines.length}):`);
+  voucherLines.forEach((vl, i) => {
+    console.log(`  Line ${i + 1}: ledger=${vl.ledgerAccountId} DR=${vl.debitAmount} CR=${vl.creditAmount} | ${vl.narration}`);
+  });
+
+  if (voucherLines.length >= 2) {
+    // Safety: adjust for floating-point rounding (should be near zero now)
+    const totalDebit = voucherLines.reduce((s, l) => s + l.debitAmount, 0);
+    const totalCredit = voucherLines.reduce((s, l) => s + l.creditAmount, 0);
+    const diff = parseFloat((totalDebit - totalCredit).toFixed(2));
+    console.log(`[B2C ${invoiceNo}] Total DR=${totalDebit.toFixed(2)}, CR=${totalCredit.toFixed(2)}, diff=${diff}`);
+    if (Math.abs(diff) > 0.01 && salesLedger) {
+      voucherLines.push({
+        ledgerAccountId: salesLedger._id.toString(),
+        debitAmount: diff > 0 ? 0 : Math.abs(diff),
+        creditAmount: diff > 0 ? diff : 0,
+        narration: 'Rounding Adjustment',
+      });
+    }
+    try {
+      const v = await voucherService.createAndPost({
+        companyId: input.companyId,
+        financialYearId: input.financialYearId,
+        voucherType: 'Receipt',
+        date: saleDate,
+        narration: `B2C Sale ${invoiceNo}`,
+        lines: voucherLines,
+        createdBy: input.createdBy,
+      });
+      console.log(`[B2C ${invoiceNo}] Voucher created successfully: ${v.voucherNo}`);
+      await SalesInvoice.updateOne({ _id: invoice!._id }, { $set: { voucherId: v._id } });
+    } catch (e: unknown) {
+      console.error(`[B2C ${invoiceNo}] Voucher creation FAILED:`, (e as Error).message || e);
+    }
+  } else {
+    console.warn(`[B2C ${invoiceNo}] Insufficient voucher lines (${voucherLines.length}). Cash ledger: ${cashLedger ? 'found' : 'MISSING'}, Sales ledger: ${salesLedger ? 'found' : 'MISSING'}`);
+  }
+
+  return {
+    invoiceId: invoice!._id.toString(),
+    invoiceNo: invoice!.invoiceNo,
+  };
+}
+
+export async function updateB2CSale(
+  invoiceId: string,
+  companyId: string,
+  input: Partial<CreateB2CSaleInput>,
+  userId: string
+): Promise<{ invoiceId: string; invoiceNo: string } | null> {
+  const existing = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: 'B2C' });
+  if (!existing) return null;
+  
+  // Recalculate with new data
+  const company = await Company.findById(companyId);
+  if (!company) throw new AppError('Company not found', 404);
+  const vatRatePct = input.vatType === 'NonVat' ? 0 : (company.vatConfig?.standardRate ?? 5);
+  const saleDate = input.date ? new Date(input.date) : existing.date;
+
+  const items = input.items ?? [];
+
+  // ── Step 1: Validate stock BEFORE deleting old data ──
+  // Delete old inventory transactions first to free up stock, then check
+  await InventoryTransaction.deleteMany({ referenceId: invoiceId, referenceType: 'SalesInvoice' });
+
+  const usedStockMap = new Map<string, number>();
+  for (const item of items) {
+    const product = await Product.findById(item.productId).lean();
+    if (!product) throw new AppError(`Product not found: ${item.productId}`, 404);
+
+    const pid = product._id.toString();
+    let requiredStock = item.quantity;
+    if (item.multiUnitId && product.multiUnits) {
+      const mu = product.multiUnits.find((m) => m.multiUnitId === item.multiUnitId);
+      if (mu && mu.conversion && mu.conversion > 0) {
+        requiredStock = item.quantity * mu.conversion;
+      }
+    }
+
+    // Check available stock (old transactions already deleted so stock is freed)
+    const stockAgg = await InventoryTransaction.aggregate([
+      { $match: { companyId: new mongoose.Types.ObjectId(companyId), productId: product._id } },
+      { $group: { _id: null, totalIn: { $sum: '$quantityIn' }, totalOut: { $sum: '$quantityOut' } } },
+    ]);
+    const totalAvailable = stockAgg.length > 0 ? stockAgg[0].totalIn - stockAgg[0].totalOut : 0;
+    const alreadyUsed = usedStockMap.get(pid) ?? 0;
+    const remainingStock = totalAvailable - alreadyUsed;
+
+    if (remainingStock < requiredStock) {
+      // Restore old inventory transactions since validation failed
+      // Re-create old items from DB — we haven't deleted SalesInvoiceItems yet
+      throw new AppError(
+        `Insufficient stock for "${product.name}". Available: ${remainingStock}, Required: ${requiredStock}`,
+        400
+      );
+    }
+    usedStockMap.set(pid, alreadyUsed + requiredStock);
+  }
+
+  // ── Step 2: Now safe to delete old items and recreate ──
+  await SalesInvoiceItem.deleteMany({ invoiceId });
+
+  let itemsGross = 0, itemsDiscount = 0, itemsVat = 0;
+  
+  for (const item of items) {
+    const product = await Product.findById(item.productId).lean();
+    if (!product) continue;
+    
+    const qty = item.quantity;
+    const price = item.unitPrice;
+    const gross = qty * price;
+    const discPct = item.discountPercent ?? 0;
+    const disc = item.discount ?? (gross * discPct / 100);
+    const net = gross - disc;
+    const vatRate = input.vatType === 'NonVat' ? 0 : (item.vatRate ?? vatRatePct);
+    const vatAmt = net * (vatRate / 100);
+    const total = net + vatAmt;
+    
+    itemsGross += gross;
+    itemsDiscount += disc;
+    itemsVat += vatAmt;
+    
+    await SalesInvoiceItem.create({
+      invoiceId: existing._id,
+      productId: product._id,
+      productCode: item.productCode ?? product.code ?? '',
+      imei: item.imei ?? product.imei ?? '',
+      multiUnitId: item.multiUnitId,
+      unitId: item.unitId,
+      unitName: item.unitName,
+      description: item.description ?? product.name,
+      quantity: qty,
+      unitPrice: price,
+      grossAmount: gross,
+      discountPercent: discPct,
+      discount: disc,
+      netAmount: net,
+      vatRate,
+      vatAmount: vatAmt,
+      totalAmount: total,
+      costPriceAtSale: product.purchasePrice ?? 0,
+    });
+    
+    // For multi-unit sales, reduce stock by conversion (pcs inside) instead of line qty
+    let stockQtyOut = qty;
+    if (item.multiUnitId && product.multiUnits) {
+      const mu = product.multiUnits.find((m) => m.multiUnitId === item.multiUnitId);
+      if (mu && mu.conversion && mu.conversion > 0) {
+        stockQtyOut = qty * mu.conversion;
+      }
+    }
+
+    await InventoryTransaction.create({
+      companyId,
+      financialYearId: input.financialYearId ?? existing.financialYearId.toString(),
+      productId: product._id,
+      date: saleDate,
+      type: 'Sales',
+      quantityIn: 0,
+      quantityOut: stockQtyOut,
+      costPrice: product.purchasePrice ?? 0,
+      referenceType: 'SalesInvoice',
+      referenceId: existing._id,
+      createdBy: userId,
+    });
+  }
+
+  const otherDiscount = input.otherDiscount ?? existing.otherDiscount ?? 0;
+  const otherCharges = input.otherCharges ?? existing.otherCharges ?? 0;
+  const freightCharge = input.freightCharge ?? existing.freightCharge ?? 0;
+  const lendAddLess = input.lendAddLess ?? existing.lendAddLess ?? 0;
+  const roundOff = input.roundOff ?? existing.roundOff ?? 0;
+  
+  const taxableAmount = itemsGross - itemsDiscount;
+  const grandTotal = taxableAmount + itemsVat - otherDiscount + otherCharges + freightCharge + lendAddLess + roundOff;
+  const cashReceived = input.cashReceived ?? (input.paymentType === 'Cash' ? grandTotal : 0);
+
+  // Delete old voucher if exists
+  if (existing.voucherId) {
+    try {
+      await Voucher.deleteOne({ _id: existing.voucherId });
+      // Also delete ledger entries for the old voucher
+      const { LedgerEntry } = await import('../models/LedgerEntry');
+      await LedgerEntry.deleteMany({ voucherId: existing.voucherId });
+    } catch {
+      // ignore
+    }
+  }
+
+  await SalesInvoice.updateOne(
+    { _id: invoiceId },
+    {
+      $set: {
+        date: saleDate,
+        customerId: input.customerId,
+        customerName: input.customerName,
+        customerAddress: input.customerAddress,
+        customerPhone: input.customerPhone,
+        salesmanId: input.salesmanId,
+        rateType: input.rateType,
+        paymentType: input.paymentType,
+        vatType: input.vatType,
+        cashAccountId: input.cashAccountId,
+        grossAmount: itemsGross,
+        discountAmount: itemsDiscount,
+        taxableAmount,
+        vatAmount: itemsVat,
+        otherDiscount,
+        otherCharges,
+        freightCharge,
+        lendAddLess,
+        roundOff,
+        totalAmount: grandTotal,
+        cashReceived,
+        balance: grandTotal - cashReceived,
+        oldBalance: input.oldBalance ?? existing.oldBalance ?? 0,
+        netBalance: grandTotal - cashReceived + (input.oldBalance ?? existing.oldBalance ?? 0),
+        paymentDetails: input.paymentDetails,
+        narration: input.narration,
+        // Shipping details
+        shippingName: input.shippingName,
+        shippingAddress: input.shippingAddress,
+        shippingPhone: input.shippingPhone,
+        shippingContactPerson: input.shippingContactPerson,
+        updatedBy: userId,
+      },
+    }
+  );
+
+  // ── Recreate accounting entries ─────────────────────────────────────
+  const cashLedger = input.cashAccountId
+    ? await LedgerAccount.findById(input.cashAccountId)
+    : await LedgerAccount.findOne({ companyId, type: 'Cash' });
+  const salesLedger = await findOrCreateSalesLedger(companyId);
+  const vatLedger = await findOrCreateVatLedger(companyId);
+  const customerLedger = input.customerId ? await LedgerAccount.findById(input.customerId) : null;
+  const cardTotal = (input.paymentDetails ?? []).reduce((s, pd) => s + (pd.amount || 0), 0);
+
+  // Look up special ledger accounts (only when the amount is non-zero)
+  const discountOnSalesLedger2 = itemsDiscount > 0
+    ? await findOrCreateSpecialLedger(companyId, 'Discount on Sales', 'Expense', 'Expense') : null;
+  const otherDiscountLedger2 = otherDiscount > 0
+    ? await findOrCreateSpecialLedger(companyId, 'Other Discount on Sales', 'Expense', 'Expense') : null;
+  const otherChargesLedger2 = otherCharges > 0
+    ? await findOrCreateSpecialLedger(companyId, 'Other Charges on Sales', 'Revenue', 'Income') : null;
+  const freightChargesLedger2 = freightCharge > 0
+    ? await findOrCreateSpecialLedger(companyId, 'Freight Charges on Sales', 'Revenue', 'Income') : null;
+  const travelChargesLedger2 = lendAddLess > 0
+    ? await findOrCreateSpecialLedger(companyId, 'Travel Charges on Sales', 'Revenue', 'Income') : null;
+  const roundOffLedger2 = Math.abs(roundOff) > 0.001
+    ? await findOrCreateSpecialLedger(companyId, 'Round Off on Sales', 'Expense', 'Expense') : null;
+
+  const voucherLines: Array<{ ledgerAccountId: string; debitAmount: number; creditAmount: number; narration?: string }> = [];
+
+  /** Helper: push the shared credit/debit lines for discounts, charges, round-off */
+  const pushSpecialLines2 = () => {
+    if (discountOnSalesLedger2 && itemsDiscount > 0) {
+      voucherLines.push({
+        ledgerAccountId: discountOnSalesLedger2._id.toString(),
+        debitAmount: itemsDiscount, creditAmount: 0,
+        narration: `B2C ${invNo} - Row Discounts`,
+      });
+    }
+    if (otherDiscountLedger2 && otherDiscount > 0) {
+      voucherLines.push({
+        ledgerAccountId: otherDiscountLedger2._id.toString(),
+        debitAmount: otherDiscount, creditAmount: 0,
+        narration: `B2C ${invNo} - Other Discount`,
+      });
+    }
+    if (otherChargesLedger2 && otherCharges > 0) {
+      voucherLines.push({
+        ledgerAccountId: otherChargesLedger2._id.toString(),
+        debitAmount: 0, creditAmount: otherCharges,
+        narration: `B2C ${invNo} - Other Charges`,
+      });
+    }
+    if (freightChargesLedger2 && freightCharge > 0) {
+      voucherLines.push({
+        ledgerAccountId: freightChargesLedger2._id.toString(),
+        debitAmount: 0, creditAmount: freightCharge,
+        narration: `B2C ${invNo} - Freight Charges`,
+      });
+    }
+    if (travelChargesLedger2 && lendAddLess > 0) {
+      voucherLines.push({
+        ledgerAccountId: travelChargesLedger2._id.toString(),
+        debitAmount: 0, creditAmount: lendAddLess,
+        narration: `B2C ${invNo} - Travel Charges`,
+      });
+    }
+    if (roundOffLedger2 && Math.abs(roundOff) > 0.001) {
+      voucherLines.push({
+        ledgerAccountId: roundOffLedger2._id.toString(),
+        debitAmount: roundOff < 0 ? Math.abs(roundOff) : 0,
+        creditAmount: roundOff > 0 ? roundOff : 0,
+        narration: `B2C ${invNo} - Round Off`,
+      });
+    }
+  };
+
+  const hasCustomerAc = !!customerLedger;
+  const isCashPayment = input.paymentType !== 'Credit';
+  const invNo = existing.invoiceNo;
+
+  if (hasCustomerAc) {
+    // ── Customer A/C selected ──
+    voucherLines.push({
+      ledgerAccountId: customerLedger!._id.toString(),
+      debitAmount: grandTotal,
+      creditAmount: 0,
+      narration: `B2C ${invNo} - Sale`,
+    });
+
+    // Credit: Sales A/C with GROSS amount (before discounts)
+    if (salesLedger) {
+      voucherLines.push({
+        ledgerAccountId: salesLedger._id.toString(),
+        debitAmount: 0,
+        creditAmount: itemsGross,
+        narration: `B2C ${invNo}`,
+      });
+    }
+
+    // Credit: VAT A/C
+    if (vatLedger && itemsVat > 0) {
+      voucherLines.push({
+        ledgerAccountId: vatLedger._id.toString(),
+        debitAmount: 0,
+        creditAmount: itemsVat,
+        narration: `B2C ${invNo}`,
+      });
+    }
+
+    // Discount, Charges & Round-off entries
+    pushSpecialLines2();
+
+    if (isCashPayment) {
+      if (input.paymentDetails && input.paymentDetails.length > 0) {
+        for (const pd of input.paymentDetails) {
+          if (pd.amount > 0 && pd.accountId) {
+            voucherLines.push({
+              ledgerAccountId: pd.accountId,
+              debitAmount: pd.amount,
+              creditAmount: 0,
+              narration: `B2C ${invNo} - ${pd.mode} Payment`,
+            });
+            voucherLines.push({
+              ledgerAccountId: customerLedger!._id.toString(),
+              debitAmount: 0,
+              creditAmount: pd.amount,
+              narration: `B2C ${invNo} - ${pd.mode} Payment`,
+            });
+          }
+        }
+      }
+
+      const cashPayment = grandTotal - cardTotal;
+      if (cashLedger && cashPayment > 0) {
+        voucherLines.push({
+          ledgerAccountId: cashLedger._id.toString(),
+          debitAmount: cashPayment,
+          creditAmount: 0,
+          narration: `B2C ${invNo} - Cash Payment`,
+        });
+        voucherLines.push({
+          ledgerAccountId: customerLedger!._id.toString(),
+          debitAmount: 0,
+          creditAmount: cashPayment,
+          narration: `B2C ${invNo} - Cash Payment`,
+        });
+      }
+    }
+  } else {
+    // ── CASH customer (no customer A/C) ──
+    const cashPortion = grandTotal - cardTotal;
+    if (cashLedger && cashPortion > 0) {
+      voucherLines.push({
+        ledgerAccountId: cashLedger._id.toString(),
+        debitAmount: cashPortion,
+        creditAmount: 0,
+        narration: `B2C ${invNo}`,
+      });
+    }
+
+    if (input.paymentDetails && input.paymentDetails.length > 0) {
+      for (const pd of input.paymentDetails) {
+        if (pd.amount > 0 && pd.accountId) {
+          voucherLines.push({
+            ledgerAccountId: pd.accountId,
+            debitAmount: pd.amount,
+            creditAmount: 0,
+            narration: `B2C ${invNo} - ${pd.mode}`,
+          });
+        }
+      }
+    }
+
+    // Credit: Sales A/C with GROSS amount (before discounts)
+    if (salesLedger) {
+      voucherLines.push({
+        ledgerAccountId: salesLedger._id.toString(),
+        debitAmount: 0,
+        creditAmount: itemsGross,
+        narration: `B2C ${invNo}`,
+      });
+    }
+
+    if (vatLedger && itemsVat > 0) {
+      voucherLines.push({
+        ledgerAccountId: vatLedger._id.toString(),
+        debitAmount: 0,
+        creditAmount: itemsVat,
+        narration: `B2C ${invNo}`,
+      });
+    }
+
+    // Discount, Charges & Round-off entries
+    pushSpecialLines2();
+  }
+
+  if (voucherLines.length >= 2) {
+    const totalDebit = voucherLines.reduce((s, l) => s + l.debitAmount, 0);
+    const totalCredit = voucherLines.reduce((s, l) => s + l.creditAmount, 0);
+    const diff = parseFloat((totalDebit - totalCredit).toFixed(2));
+    if (Math.abs(diff) > 0.01 && salesLedger) {
+      voucherLines.push({
+        ledgerAccountId: salesLedger._id.toString(),
+        debitAmount: diff > 0 ? 0 : Math.abs(diff),
+        creditAmount: diff > 0 ? diff : 0,
+        narration: 'Rounding Adjustment',
+      });
+    }
+    try {
+      const v = await voucherService.createAndPost({
+        companyId,
+        financialYearId: input.financialYearId ?? existing.financialYearId.toString(),
+        voucherType: 'Receipt',
+        date: saleDate,
+        narration: `B2C Sale ${invNo}`,
+        lines: voucherLines,
+        createdBy: userId,
+      });
+      await SalesInvoice.updateOne({ _id: invoiceId }, { $set: { voucherId: v._id } });
+    } catch (e: unknown) {
+      console.error(`[B2C ${invNo} update] Voucher creation failed:`, (e as Error).message || e);
+    }
+  } else {
+    console.warn(`[B2C ${invNo} update] Insufficient voucher lines (${voucherLines.length}). Cash: ${cashLedger ? 'found' : 'MISSING'}, Sales: ${salesLedger ? 'found' : 'MISSING'}`);
+  }
+
+  return { invoiceId, invoiceNo: existing.invoiceNo };
+}
+
+export async function deleteB2CSale(invoiceId: string, companyId: string): Promise<boolean> {
+  const invoice = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: 'B2C' });
+  if (!invoice) return false;
+  
+  // Delete line items
+  await SalesInvoiceItem.deleteMany({ invoiceId });
+  
+  // Reverse inventory transactions
+  await InventoryTransaction.deleteMany({ referenceId: invoiceId, referenceType: 'SalesInvoice' });
+  
+  // Reverse accounting entries - delete voucher and associated ledger entries
+  if (invoice.voucherId) {
+    try {
+      const { LedgerEntry } = await import('../models/LedgerEntry');
+      await LedgerEntry.deleteMany({ voucherId: invoice.voucherId });
+      await Voucher.deleteOne({ _id: invoice.voucherId });
+    } catch (e) {
+      console.error(`[B2C Delete] Failed to reverse accounting entries for voucher ${invoice.voucherId}:`, (e as Error).message || e);
+    }
+  }
+  
+  await SalesInvoice.deleteOne({ _id: invoiceId });
+  
+  return true;
+}
+
+export async function listB2CInvoices(
+  companyId: string,
+  financialYearId: string,
+  opts: { search?: string; fromDate?: string; toDate?: string; page?: number; limit?: number } = {}
+) {
+  const filter: Record<string, unknown> = { companyId, financialYearId, type: 'B2C' };
+  
+  if (opts.search) {
+    filter.$or = [
+      { invoiceNo: new RegExp(opts.search, 'i') },
+      { customerName: new RegExp(opts.search, 'i') },
+    ];
+  }
+  if (opts.fromDate || opts.toDate) {
+    filter.date = {};
+    if (opts.fromDate) (filter.date as Record<string, Date>).$gte = new Date(opts.fromDate);
+    if (opts.toDate) (filter.date as Record<string, Date>).$lte = new Date(opts.toDate);
+  }
+
+  const total = await SalesInvoice.countDocuments(filter);
+  const page = opts.page ?? 1;
+  const limit = Math.min(opts.limit ?? 20, 100);
+  
+  const invoices = await SalesInvoice.find(filter)
+    .populate('customerId', 'name code')
+    .sort({ createdAt: -1 })
+    .skip((page - 1) * limit)
+    .limit(limit)
+    .lean();
+
+  return { invoices, total };
+}
+
+export async function getB2CInvoice(invoiceId: string, companyId: string) {
+  const invoice = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: 'B2C' })
+    .populate('customerId', 'name code address')
+    .populate('salesmanId', 'username displayName')
+    .populate('cashAccountId', 'name code')
+    .lean();
+  if (!invoice) return null;
+  
+  const items = await SalesInvoiceItem.find({ invoiceId })
+    .populate({
+      path: 'productId',
+      select: 'name code imei sku retailPrice wholesalePrice purchasePrice unitOfMeasureId multiUnits',
+      populate: [
+        { path: 'unitOfMeasureId', select: 'name shortCode' },
+        { path: 'multiUnits.unitId', select: 'name shortCode' }
+      ]
+    })
+    .lean();
+  
+  return { ...invoice, items };
+}
+
+export async function searchB2CByInvoiceNo(companyId: string, invoiceNo: string) {
+  const invoice = await SalesInvoice.findOne({
+    companyId,
+    type: 'B2C',
+    invoiceNo: new RegExp(invoiceNo, 'i'),
+  }).lean();
+  if (!invoice) return null;
+  return getB2CInvoice(invoice._id.toString(), companyId);
+}
+
+/**
+ * Get transaction history for a product sold to a specific customer.
+ * Returns all B2C invoice items for the given product + customer.
+ */
+export async function getProductCustomerHistory(
+  companyId: string,
+  productId: string,
+  customerId?: string
+) {
+  // Build the invoice filter
+  const invoiceFilter: Record<string, unknown> = {
+    companyId,
+    type: 'B2C',
+    status: { $ne: 'Cancelled' },
+  };
+  if (customerId) {
+    invoiceFilter.customerId = new mongoose.Types.ObjectId(customerId);
+  }
+
+  // Find matching invoices
+  const invoices = await SalesInvoice.find(invoiceFilter)
+    .select('_id invoiceNo date customerName totalAmount')
+    .sort({ date: -1, createdAt: -1 })
+    .lean();
+
+  if (invoices.length === 0) return [];
+
+  const invoiceIds = invoices.map((inv) => inv._id);
+
+  // Find items for the product across those invoices
+  const items = await SalesInvoiceItem.find({
+    invoiceId: { $in: invoiceIds },
+    productId: new mongoose.Types.ObjectId(productId),
+  }).lean();
+
+  // Build result by joining invoice + item data
+  const invoiceMap = new Map(invoices.map((inv) => [inv._id.toString(), inv]));
+  return items.map((item) => {
+    const inv = invoiceMap.get(item.invoiceId.toString());
+    return {
+      invoiceNo: inv?.invoiceNo || '',
+      date: inv?.date || '',
+      customerName: inv?.customerName || '',
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      unitName: item.unitName || '',
+      discount: item.discount,
+      total: item.totalAmount,
+    };
+  }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 5);
 }

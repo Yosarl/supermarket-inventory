@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import KeepAliveOutlet from '../components/KeepAliveOutlet';
 import AppBar from '@mui/material/AppBar';
 import Box from '@mui/material/Box';
 import Drawer from '@mui/material/Drawer';
@@ -18,7 +19,6 @@ import ExpandMore from '@mui/icons-material/ExpandMore';
 import MenuIcon from '@mui/icons-material/Menu';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import BusinessIcon from '@mui/icons-material/Business';
-import AddBusinessIcon from '@mui/icons-material/AddBusiness';
 import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
 import InventoryIcon from '@mui/icons-material/Inventory';
 import AddIcon from '@mui/icons-material/Add';
@@ -40,8 +40,12 @@ import HelpIcon from '@mui/icons-material/Help';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import InfoIcon from '@mui/icons-material/Info';
+import SettingsIcon from '@mui/icons-material/Settings';
+import MinimizeIcon from '@mui/icons-material/Minimize';
+import CloseIcon from '@mui/icons-material/Close';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { logout } from '../store/slices/authSlice';
+import { toggleDrawer } from '../store/slices/appSlice';
 
 const W = 280;
 
@@ -52,24 +56,25 @@ const menuSections: SectionDef[] = [
   {
     title: 'FILE',
     items: [
+      { label: 'Company Details', path: '/file/company-details', icon: <BusinessIcon /> },
       { label: 'User Management', path: '/file/users', icon: <PeopleIcon /> },
       { label: 'Create User', path: '/file/users/create', icon: <AddIcon /> },
       { label: 'Update User Credentials', path: '/file/users/credentials', icon: <LockIcon /> },
       { label: 'User Permissions', path: '/file/users/permissions', icon: <LockIcon /> },
-      { label: 'Create Company', path: '/file/companies/create', icon: <AddBusinessIcon /> },
       { label: 'Change Financial Year', path: '/file/change-financial-year', icon: <CalendarMonthIcon /> },
+      { label: 'Software Settings', path: '/file/software-settings', icon: <SettingsIcon /> },
       { label: 'Exit', icon: <LogoutIcon />, action: 'logout' },
     ],
   },
   {
     title: 'MASTER',
     items: [
-      { label: 'Customer Reg', path: '/master/customers', icon: <BusinessIcon /> },
-      { label: 'Supplier Reg', path: '/master/suppliers', icon: <BusinessIcon /> },
-      { label: 'Other Ledger Reg', path: '/master/ledger-accounts', icon: <AccountTreeIcon /> },
-      { label: 'Group Reg', path: '/master/groups', icon: <AccountTreeIcon /> },
+      { label: 'Customer Reg', path: '/master/customer-create', icon: <BusinessIcon /> },
+      { label: 'Supplier Reg', path: '/master/supplier-create', icon: <BusinessIcon /> },
+      { label: 'Other Ledger Reg', path: '/master/other-ledger-create', icon: <AccountTreeIcon /> },
+      { label: 'Group Reg', path: '/master/groups/create', icon: <AccountTreeIcon /> },
       { label: 'Chart of Accounts', path: '/master/chart-of-accounts', icon: <AccountTreeIcon /> },
-      { label: 'Product Reg', path: '/master/products', icon: <InventoryIcon /> },
+      { label: 'Product Reg', path: '/master/products/create', icon: <InventoryIcon /> },
       { label: 'Product Management', path: '/master/products/management', icon: <InventoryIcon /> },
       { label: 'Stock Adjustment', path: '/master/stock-adjustment', icon: <InventoryIcon /> },
     ],
@@ -146,7 +151,6 @@ const menuSections: SectionDef[] = [
 ];
 
 export default function MainLayout() {
-  const [open, setOpen] = useState(true);
   const [anchor, setAnchor] = useState<null | HTMLElement>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     FILE: true,
@@ -161,6 +165,15 @@ export default function MainLayout() {
   const dispatch = useAppDispatch();
   const user = useAppSelector((s) => s.auth.user);
   const cid = useAppSelector((s) => s.app.selectedCompanyId);
+  const open = useAppSelector((s) => s.app.drawerOpen);
+  const hasCompany = (user?.companyAccess?.length ?? 0) > 0;
+
+  useEffect(() => {
+    if (!user) return;
+    if (!hasCompany && loc.pathname !== '/file/companies/create') {
+      navigate('/file/companies/create', { replace: true });
+    }
+  }, [user, hasCompany, loc.pathname, navigate]);
 
   const canAccess = (item: MenuItemDef): boolean => {
     if (!item.permission) return true;
@@ -186,52 +199,237 @@ export default function MainLayout() {
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh' }}>
       <AppBar position="fixed" sx={{ zIndex: 1201 }}>
-        <Toolbar>
-          <IconButton color="inherit" onClick={() => setOpen(!open)} edge="start" sx={{ mr: 2 }}><MenuIcon /></IconButton>
-          <Typography variant="h6" sx={{ flexGrow: 1 }}>Supermarket (UAE)</Typography>
-          {cid && <Typography variant="body2" sx={{ mr: 2 }}>Company</Typography>}
-          <IconButton color="inherit" onClick={(e) => setAnchor(e.currentTarget)}><Typography variant="body2">{user?.fullName ?? user?.username ?? 'User'}</Typography></IconButton>
+        <Toolbar variant="dense" sx={{ minHeight: 36, height: 36, px: 1.5 }}>
+          <IconButton color="inherit" onClick={() => dispatch(toggleDrawer())} edge="start" sx={{ mr: 1 }}><MenuIcon fontSize="small" /></IconButton>
+          <Typography variant="subtitle1" sx={{ fontWeight: 600, fontSize: '0.9rem', mr: 1.5 }}>Supermarket (UAE)</Typography>
+          <Box
+            component="button"
+            onClick={() => navigate('/entry/sales-b2c')}
+            title="Sales B2C"
+            sx={{
+              all: 'unset',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 0.4,
+              px: 0.5,
+              py: 0.2,
+              borderRadius: 0.8,
+              fontSize: '0.65rem',
+              fontWeight: 600,
+              color: 'rgba(255,255,255,0.8)',
+              transition: 'all 0.2s',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              maxWidth: 22,
+              '&:hover': { maxWidth: 100, bgcolor: 'rgba(255,255,255,0.15)', color: '#fff', px: 0.8 },
+              '&:active': { bgcolor: 'rgba(255,255,255,0.25)' },
+              '& .btn-label': { opacity: 0, ml: 0, transition: 'opacity 0.2s, margin 0.2s' },
+              '&:hover .btn-label': { opacity: 1, ml: 0.3 },
+            }}
+          >
+            <PointOfSaleIcon sx={{ fontSize: 16, flexShrink: 0 }} />
+            <span className="btn-label">Sales B2C</span>
+          </Box>
+          <Box
+            component="button"
+            onClick={() => navigate('/entry/purchase')}
+            title="Purchase Entry"
+            sx={{
+              all: 'unset',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 0.4,
+              px: 0.5,
+              py: 0.2,
+              ml: 0.5,
+              borderRadius: 0.8,
+              fontSize: '0.65rem',
+              fontWeight: 600,
+              color: 'rgba(255,255,255,0.8)',
+              transition: 'all 0.2s',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              maxWidth: 22,
+              '&:hover': { maxWidth: 120, bgcolor: 'rgba(255,255,255,0.15)', color: '#fff', px: 0.8 },
+              '&:active': { bgcolor: 'rgba(255,255,255,0.25)' },
+              '& .btn-label': { opacity: 0, ml: 0, transition: 'opacity 0.2s, margin 0.2s' },
+              '&:hover .btn-label': { opacity: 1, ml: 0.3 },
+            }}
+          >
+            <ShoppingCartIcon sx={{ fontSize: 16, flexShrink: 0 }} />
+            <span className="btn-label">Purchase Entry</span>
+          </Box>
+          <Box
+            component="button"
+            onClick={() => navigate('/report/stock-report')}
+            title="Stock Report"
+            sx={{
+              all: 'unset',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 0.4,
+              px: 0.5,
+              py: 0.2,
+              ml: 0.5,
+              borderRadius: 0.8,
+              fontSize: '0.65rem',
+              fontWeight: 600,
+              color: 'rgba(255,255,255,0.8)',
+              transition: 'all 0.2s',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              maxWidth: 22,
+              '&:hover': { maxWidth: 110, bgcolor: 'rgba(255,255,255,0.15)', color: '#fff', px: 0.8 },
+              '&:active': { bgcolor: 'rgba(255,255,255,0.25)' },
+              '& .btn-label': { opacity: 0, ml: 0, transition: 'opacity 0.2s, margin 0.2s' },
+              '&:hover .btn-label': { opacity: 1, ml: 0.3 },
+            }}
+          >
+            <InventoryIcon sx={{ fontSize: 16, flexShrink: 0 }} />
+            <span className="btn-label">Stock Report</span>
+          </Box>
+          <Box
+            component="button"
+            onClick={() => navigate('/report/ledger')}
+            title="Ledger Report"
+            sx={{
+              all: 'unset',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 0.4,
+              px: 0.5,
+              py: 0.2,
+              ml: 0.5,
+              borderRadius: 0.8,
+              fontSize: '0.65rem',
+              fontWeight: 600,
+              color: 'rgba(255,255,255,0.8)',
+              transition: 'all 0.2s',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              maxWidth: 22,
+              '&:hover': { maxWidth: 140, bgcolor: 'rgba(255,255,255,0.15)', color: '#fff', px: 0.8 },
+              '&:active': { bgcolor: 'rgba(255,255,255,0.25)' },
+              '& .btn-label': { opacity: 0, ml: 0, transition: 'opacity 0.2s, margin 0.2s' },
+              '&:hover .btn-label': { opacity: 1, ml: 0.3 },
+            }}
+          >
+            <AccountTreeIcon sx={{ fontSize: 16, flexShrink: 0 }} />
+            <span className="btn-label">Ledger Report</span>
+          </Box>
+          <Box sx={{ flexGrow: 1 }} />
+          {cid && <Typography variant="caption" sx={{ mr: 1.5 }}>Company</Typography>}
+          <IconButton color="inherit" size="small" onClick={(e) => setAnchor(e.currentTarget)}><Typography variant="caption">{user?.fullName ?? user?.username ?? 'User'}</Typography></IconButton>
           <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
             <MenuItem onClick={() => { dispatch(logout()); navigate('/login'); setAnchor(null); }}>
               <ListItemIcon><LogoutIcon fontSize="small" /></ListItemIcon> Logout
             </MenuItem>
           </Menu>
+          <Box sx={{ ml: 2, display: 'flex', alignItems: 'center', gap: 0, height: 36 }}>
+            <Box
+              component="button"
+              onClick={() => (window as any).electronAPI?.minimizeWindow?.()}
+              title="Minimize"
+              sx={{
+                all: 'unset',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 40,
+                height: '100%',
+                color: 'white',
+                transition: 'background 0.15s',
+                '&:hover': { bgcolor: 'rgba(255,255,255,0.12)' },
+                '&:active': { bgcolor: 'rgba(255,255,255,0.2)' },
+              }}
+            >
+              <MinimizeIcon sx={{ fontSize: 18 }} />
+            </Box>
+            <Box
+              component="button"
+              onClick={() => (window as any).electronAPI?.closeWindow?.()}
+              title="Exit"
+              sx={{
+                all: 'unset',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 40,
+                height: '100%',
+                color: 'white',
+                transition: 'background 0.15s',
+                '&:hover': { bgcolor: '#dc2626', color: '#fff' },
+                '&:active': { bgcolor: '#b91c1c' },
+              }}
+            >
+              <CloseIcon sx={{ fontSize: 18 }} />
+            </Box>
+          </Box>
         </Toolbar>
       </AppBar>
-      <Drawer variant="persistent" open={open} sx={{ width: W, flexShrink: 0, '& .MuiDrawer-paper': { width: W, top: 64 } }}>
-        <Toolbar />
+      <Drawer variant="temporary" open={open} onClose={() => dispatch(toggleDrawer())} ModalProps={{ keepMounted: true }} sx={{ zIndex: 1200, '& .MuiDrawer-paper': { width: W, top: 36, height: 'calc(100% - 36px)', boxSizing: 'border-box' }, '& .MuiBackdrop-root': { top: 36 } }}>
+        <Toolbar variant="dense" sx={{ minHeight: 0, p: 0 }} />
         <List sx={{ py: 0, overflow: 'auto' }}>
-          <ListItemButton selected={loc.pathname === '/'} onClick={() => navigate('/')}>
-            <ListItemIcon><DashboardIcon /></ListItemIcon>
-            <ListItemText primary="Dashboard" />
-          </ListItemButton>
-          {menuSections.map((sec) => (
-            <Box key={sec.title}>
-              <ListItemButton onClick={() => toggleSection(sec.title)} sx={{ py: 0.5 }}>
-                <ListItemText primary={sec.title} primaryTypographyProps={{ variant: 'caption', fontWeight: 700 }} />
-                {expanded[sec.title] ? <ExpandLess /> : <ExpandMore />}
-              </ListItemButton>
-              <Collapse in={expanded[sec.title]} timeout="auto" unmountOnExit>
-                <List component="div" disablePadding dense>
-                  {sec.items.filter(canAccess).map((item) => (
-                    <ListItemButton
-                      key={item.label}
-                      selected={item.path ? loc.pathname === item.path : false}
-                      onClick={() => handleNav(item)}
-                      sx={{ pl: 2 }}
-                    >
-                      {item.icon && <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>}
-                      <ListItemText primary={item.label} primaryTypographyProps={{ variant: 'body2' }} />
-                    </ListItemButton>
-                  ))}
-                </List>
-              </Collapse>
-            </Box>
-          ))}
+          {hasCompany && (
+            <ListItemButton selected={loc.pathname === '/'} onClick={() => navigate('/')}>
+              <ListItemIcon><DashboardIcon /></ListItemIcon>
+              <ListItemText primary="Dashboard" />
+            </ListItemButton>
+          )}
+          {menuSections.map((sec) => {
+            const items = hasCompany
+              ? sec.items.filter(canAccess)
+              : sec.title === 'FILE'
+                ? [
+                    { label: 'Create Company', path: '/file/companies/create', icon: <BusinessIcon /> },
+                    ...sec.items.filter((i) => i.action === 'logout'),
+                  ]
+                : [];
+            if (items.length === 0) return null;
+            return (
+              <Box key={sec.title}>
+                <ListItemButton onClick={() => toggleSection(sec.title)} sx={{ py: 0.5 }}>
+                  <ListItemText primary={sec.title} primaryTypographyProps={{ variant: 'caption', fontWeight: 700 }} />
+                  {expanded[sec.title] ? <ExpandLess /> : <ExpandMore />}
+                </ListItemButton>
+                <Collapse in={expanded[sec.title]} timeout="auto" unmountOnExit>
+                  <List component="div" disablePadding dense>
+                    {items.map((item) => (
+                      <ListItemButton
+                        key={item.label}
+                        selected={item.path ? loc.pathname === item.path : false}
+                        onClick={() => handleNav(item)}
+                        sx={{ pl: 2 }}
+                      >
+                        {item.icon && <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>}
+                        <ListItemText primary={item.label} primaryTypographyProps={{ variant: 'body2' }} />
+                      </ListItemButton>
+                    ))}
+                  </List>
+                </Collapse>
+              </Box>
+            );
+          })}
         </List>
       </Drawer>
-      <Box component="main" sx={{ flexGrow: 1, p: 3, mt: 7, ml: open ? 0 : -W }}>
-        <Outlet />
+      <Box
+        component="main"
+        sx={{
+          flexGrow: 1,
+          p: 1.5,
+          mt: '44px',
+          width: '100%',
+          minWidth: 0,
+          overflow: 'auto',
+        }}
+      >
+        <KeepAliveOutlet />
       </Box>
     </Box>
   );

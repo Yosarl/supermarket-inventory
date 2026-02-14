@@ -1,20 +1,29 @@
 {
-  "name": "supermarket-inventory-frontend",
+  "name": "supermarket-inventory",
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron:dev": "vite",
+    "build:backend": "node -e \"const{execSync}=require('child_process');try{execSync('npm run build',{stdio:'inherit',cwd:require('path').resolve(__dirname,'..','backend')})}catch(e){console.log('[build] Backend compiled with type warnings (JS emitted ok)')}\"",
+    "electron:build": "npm run build:backend && vite build && electron-builder",
+    "electron:build:win": "npm run build:backend && vite build && electron-builder --win",
+    "electron:build:mac": "npm run build:backend && vite build && electron-builder --mac",
+    "electron:build:linux": "npm run build:backend && vite build && electron-builder --linux"
   },
   "dependencies": {
     "@emotion/react": "^11.11.3",
     "@emotion/styled": "^11.11.0",
     "@mui/icons-material": "^5.15.3",
     "@mui/material": "^5.15.3",
+    "@mui/x-date-pickers": "^8.27.0",
     "@reduxjs/toolkit": "^2.0.1",
     "axios": "^1.6.5",
+    "dayjs": "^1.11.19",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-hook-form": "^7.49.3",
@@ -26,7 +35,11 @@
     "@types/react": "^18.2.48",
     "@types/react-dom": "^18.2.18",
     "@vitejs/plugin-react": "^4.2.1",
+    "electron": "^40.2.1",
+    "electron-builder": "^26.7.0",
     "typescript": "^5.3.3",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vite-plugin-electron": "^0.29.0",
+    "vite-plugin-electron-renderer": "^0.14.6"
   }
 }

@@ -2,7 +2,7 @@ import { FinancialYear, IFinancialYear } from '../models/FinancialYear';
 import { AppError } from '../middlewares/errorHandler';
 
 export async function getCurrentForCompany(companyId: string): Promise<IFinancialYear | null> {
-  return FinancialYear.findOne({ companyId, isCurrent: true }).lean();
+  return FinancialYear.findOne({ companyId, isCurrent: true }).lean() as unknown as IFinancialYear | null;
 }
 
 export async function setCurrent(companyId: string, financialYearId: string, userId?: string): Promise<IFinancialYear> {
@@ -17,7 +17,7 @@ export async function setCurrent(companyId: string, financialYearId: string, use
 }
 
 export async function listByCompany(companyId: string): Promise<IFinancialYear[]> {
-  return FinancialYear.find({ companyId }).sort({ startDate: -1 }).lean();
+  return FinancialYear.find({ companyId }).sort({ startDate: -1 }).lean() as unknown as IFinancialYear[];
 }
 
 export async function create(

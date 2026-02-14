@@ -6,7 +6,16 @@ import { useAppSelector } from '../store/hooks';
 import { productApi } from '../services/api';
 
 export default function ProductList() {
-  const [products, setProducts] = useState<Array<{ _id: string; name: string; sku: string; systemBarcode: string; sellingPrice: number; purchasePrice: number }>>([]);
+  const [products, setProducts] = useState<Array<{
+    _id: string;
+    name: string;
+    sku: string;
+    systemBarcode: string;
+    sellingPrice: number;
+    purchasePrice: number;
+    imei?: string;
+    multiUnits?: Array<{ imei?: string; conversion?: number; price?: number; unitId?: string }>;
+  }>>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
@@ -36,7 +45,8 @@ export default function ProductList() {
               <TableRow>
                 <TableCell>Name</TableCell>
                 <TableCell>SKU</TableCell>
-                <TableCell>Barcode</TableCell>
+                <TableCell>IMEI</TableCell>
+                <TableCell>Multi Unit IMEI</TableCell>
                 <TableCell align="right">Selling (AED)</TableCell>
                 <TableCell align="right">Purchase (AED)</TableCell>
               </TableRow>
@@ -46,7 +56,8 @@ export default function ProductList() {
                 <TableRow key={p._id}>
                   <TableCell>{p.name}</TableCell>
                   <TableCell>{p.sku}</TableCell>
-                  <TableCell>{p.systemBarcode}</TableCell>
+                  <TableCell>{p.imei ?? '—'}</TableCell>
+                  <TableCell>{p.multiUnits?.map((u) => u.imei).filter(Boolean).join(', ') || '—'}</TableCell>
                   <TableCell align="right">{p.sellingPrice?.toFixed(2)}</TableCell>
                   <TableCell align="right">{p.purchasePrice?.toFixed(2)}</TableCell>
                 </TableRow>

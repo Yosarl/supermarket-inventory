@@ -1,0 +1,53 @@
+appId: com.supermarket.inventory
+productName: Supermarket Inventory
+copyright: Copyright © 2026
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - dist
+  - dist-electron
+
+# Place the backend outside the asar, directly in resources/.
+# This is required because utilityProcess.fork() / child_process needs
+# real filesystem access (not asar), and node_modules may have native addons.
+extraResources:
+  - from: "../backend/dist"
+    to: "backend/dist"
+  - from: "../backend/node_modules"
+    to: "backend/node_modules"
+  - from: "../backend/package.json"
+    to: "backend/package.json"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-Setup.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  shortcutName: Supermarket Inventory
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  artifactName: ${productName}-${version}.${ext}
+  category: public.app-category.business
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  artifactName: ${productName}-${version}.${ext}
+  category: Office

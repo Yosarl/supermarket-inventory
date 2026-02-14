@@ -87,4 +87,6 @@ const CompanySchema = new Schema<ICompany>(
   { timestamps: true }
 );
 
+CompanySchema.index({ code: 1 }, { unique: true, sparse: true });
+
 export const Company = mongoose.model<ICompany>('Company', CompanySchema);

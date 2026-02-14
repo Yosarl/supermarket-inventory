@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, Controller } from 'react-hook-form';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Box,
@@ -15,6 +15,7 @@ import {
 } from '@mui/material';
 import { useAppSelector } from '../store/hooks';
 import { ledgerAccountApi, ledgerGroupApi } from '../services/api';
+import DateInput from '../components/DateInput';
 
 type Group = { _id: string; name: string; code: string; type: string; isReceivables?: boolean; isPayables?: boolean };
 
@@ -76,7 +77,7 @@ export default function LedgerAccountCreate() {
     : defaultType === 'Supplier' ? payablesId
     : '';
 
-  const { register, handleSubmit, formState: { errors }, reset, setValue, watch } = useForm<FormData>({
+  const { register, handleSubmit, formState: { errors }, reset, setValue, watch, control } = useForm<FormData>({
     defaultValues: {
       serviceItem: false,
       taxable: false,
@@ -123,52 +124,60 @@ export default function LedgerAccountCreate() {
     });
   }, [companyId, defaultType, setValue]);
 
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   const onSubmit = async (data: FormData) => {
     if (!companyId) return;
-    await ledgerAccountApi.create({
-      companyId,
-      financialYearId: financialYearId || undefined,
-      name: data.name,
-      aliasName: data.aliasName || undefined,
-      code: data.code || undefined,
-      groupId: data.groupId,
-      type: ['Customer', 'Supplier', 'Bank', 'Cash', 'Expense', 'Revenue', 'Other'].includes(defaultType) ? defaultType : 'Other',
-      phone: data.phone || undefined,
-      mobile: data.mobile || undefined,
-      email: data.email || undefined,
-      address: data.address || undefined,
-      location: data.location || undefined,
-      pincode: data.pincode || undefined,
-      TRN: data.TRN || undefined,
-      state: data.state || undefined,
-      stateCode: data.stateCode || undefined,
-      costCentre: data.costCentre || undefined,
-      creditLimit: data.creditLimit ? Number(data.creditLimit) : undefined,
-      creditDays: data.creditDays ? Number(data.creditDays) : undefined,
-      paymentTerms: data.paymentTerms || undefined,
-      openingBalanceDr: data.openingBalanceDr ? Number(data.openingBalanceDr) : undefined,
-      openingBalanceCr: data.openingBalanceCr ? Number(data.openingBalanceCr) : undefined,
-      serviceItem: data.serviceItem,
-      sacHsn: data.sacHsn || undefined,
-      taxable: data.taxable,
-      area: data.area || undefined,
-      route: data.route || undefined,
-      day: data.day || undefined,
-      district: data.district || undefined,
-      agency: data.agency || undefined,
-      regDate: data.regDate || undefined,
-      discPercent: data.discPercent ? Number(data.discPercent) : undefined,
-      category: data.category || undefined,
-      rateType: data.rateType || undefined,
-      remarks: data.remarks || undefined,
-      rating: data.rating || undefined,
-      story: data.story || undefined,
-      empCode: data.empCode || undefined,
-      salesMan: data.salesMan || undefined,
-      person: data.person || undefined,
-      agent2: data.agent2 || undefined,
-    });
-    navigate('/master/customers');
+    setSaveError(null);
+    try {
+      await ledgerAccountApi.create({
+        companyId,
+        financialYearId: financialYearId || undefined,
+        name: data.name,
+        aliasName: data.aliasName || undefined,
+        code: data.code || undefined,
+        groupId: data.groupId,
+        type: ['Customer', 'Supplier', 'Bank', 'Cash', 'Expense', 'Revenue', 'Other'].includes(defaultType) ? defaultType : 'Other',
+        phone: data.phone || undefined,
+        mobile: data.mobile || undefined,
+        email: data.email || undefined,
+        address: data.address || undefined,
+        location: data.location || undefined,
+        pincode: data.pincode || undefined,
+        TRN: data.TRN || undefined,
+        state: data.state || undefined,
+        stateCode: data.stateCode || undefined,
+        costCentre: data.costCentre || undefined,
+        creditLimit: data.creditLimit ? Number(data.creditLimit) : undefined,
+        creditDays: data.creditDays ? Number(data.creditDays) : undefined,
+        paymentTerms: data.paymentTerms || undefined,
+        openingBalanceDr: data.openingBalanceDr ? Number(data.openingBalanceDr) : undefined,
+        openingBalanceCr: data.openingBalanceCr ? Number(data.openingBalanceCr) : undefined,
+        serviceItem: data.serviceItem,
+        sacHsn: data.sacHsn || undefined,
+        taxable: data.taxable,
+        area: data.area || undefined,
+        route: data.route || undefined,
+        day: data.day || undefined,
+        district: data.district || undefined,
+        agency: data.agency || undefined,
+        regDate: data.regDate || undefined,
+        discPercent: data.discPercent ? Number(data.discPercent) : undefined,
+        category: data.category || undefined,
+        rateType: data.rateType || undefined,
+        remarks: data.remarks || undefined,
+        rating: data.rating || undefined,
+        story: data.story || undefined,
+        empCode: data.empCode || undefined,
+        salesMan: data.salesMan || undefined,
+        person: data.person || undefined,
+        agent2: data.agent2 || undefined,
+      });
+      navigate('/master/customers');
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { message?: string } } };
+      setSaveError(err?.response?.data?.message ?? 'Save failed');
+    }
   };
 
   const handleClear = () => reset();
@@ -177,6 +186,9 @@ export default function LedgerAccountCreate() {
 
   return (
     <Box>
+      {saveError && (
+        <Typography color="error" sx={{ mb: 2, fontWeight: 'bold' }}>{saveError}</Typography>
+      )}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
         <Typography variant="h4">Ledger Registration</Typography>
         <Typography variant="body2" color="text.secondary">
@@ -197,7 +209,7 @@ export default function LedgerAccountCreate() {
                   <TextField fullWidth size="small" label="Alias Name" {...register('aliasName')} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Account Code" {...register('code')} placeholder="Auto" />
+                  <TextField fullWidth size="small" label="Account Code" {...register('code')} helperText="Auto-generated when empty" InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
                   <TextField
@@ -284,7 +296,7 @@ export default function LedgerAccountCreate() {
                   <TextField fullWidth size="small" label="Agency" {...register('agency')} />
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField fullWidth size="small" type="date" label="Reg Date" InputLabelProps={{ shrink: true }} {...register('regDate')} />
+                  <Controller name="regDate" control={control} render={({ field }) => <DateInput label="Reg Date" value={field.value || ''} onChange={field.onChange} size="small" />} />
                 </Grid>
                 <Grid item xs={6}>
                   <TextField fullWidth size="small" type="number" label="Disc %" {...register('discPercent')} inputProps={{ min: 0, max: 100, step: 0.01 }} />

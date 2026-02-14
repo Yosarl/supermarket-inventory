@@ -109,3 +109,225 @@ export async function getUnits(
     next(err);
   }
 }
+
+export async function getCategories(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const data = await productService.getCategories(companyId);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export const createCategoryValidators = [
+  body('companyId').notEmpty().withMessage('Company ID required'),
+  body('name').trim().notEmpty().withMessage('Category name is required'),
+  body('code').optional().trim(),
+];
+
+export async function createCategory(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = (req.body.companyId || req.query.companyId) as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const userId = req.user?._id?.toString();
+    const data = await productService.createCategory(
+      companyId,
+      { name: req.body.name, code: req.body.code ?? req.body.name },
+      userId
+    );
+    res.status(201).json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export const createUnitValidators = [
+  body('companyId').notEmpty().withMessage('Company ID required'),
+  body('name').trim().notEmpty().withMessage('Unit name is required'),
+  body('shortCode').optional().trim(),
+];
+
+export async function createUnit(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = (req.body.companyId || req.query.companyId) as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const userId = req.user?._id?.toString();
+    const data = await productService.createUnit(
+      companyId,
+      { name: req.body.name, shortCode: req.body.shortCode ?? req.body.name },
+      userId
+    );
+    res.status(201).json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getItemGroups(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const data = await productService.getItemGroups(companyId);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getBrands(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const data = await productService.getBrands(companyId);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getNextCode(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const code = await productService.getNextProductCode(companyId);
+    res.json({ success: true, data: { code } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getByImei(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    const imei = req.query.imei as string;
+    if (!companyId || !imei) {
+      res.status(400).json({ success: false, message: 'Company ID and IMEI required' });
+      return;
+    }
+    const data = await productService.findByImei(companyId, imei);
+    if (!data) {
+      res.status(404).json({ success: false, message: 'Product not found' });
+      return;
+    }
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateProduct(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const productId = req.params.id;
+    const companyId = (req.query.companyId || req.body.companyId) as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const userId = req.user!._id.toString();
+    const data = await productService.updateProduct(productId, companyId, req.body, userId);
+    if (!data) {
+      res.status(404).json({ success: false, message: 'Product not found' });
+      return;
+    }
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function uploadProductImage(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    if (!req.file) {
+      res.status(400).json({ success: false, message: 'No image file uploaded' });
+      return;
+    }
+    const url = `/uploads/products/${companyId}/${req.file.filename}`;
+    res.json({ success: true, data: { url } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteProduct(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const productId = req.params.id;
+    const companyId = req.query.companyId as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const deleted = await productService.deleteProduct(productId, companyId);
+    if (!deleted) {
+      res.status(404).json({ success: false, message: 'Product not found' });
+      return;
+    }
+    res.json({ success: true, message: 'Product deleted' });
+  } catch (err) {
+    next(err);
+  }
+}

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useForm, useFieldArray } from 'react-hook-form';
-import { Box, Button, TextField, Typography, Paper, Table, TableBody, TableCell, TableHead, TableRow, MenuItem, IconButton } from '@mui/material';
+import { Box, Button, TextField, Typography, Paper, Table, TableBody, TableCell, TableHead, TableRow, MenuItem, IconButton, Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import { useAppSelector } from '../store/hooks';
@@ -13,7 +13,10 @@ const VOUCHER_LABELS: Record<string, string> = { Receipt: 'Receipt', Payment: 'P
 
 export default function VoucherEntry({ defaultVoucherType = 'Receipt' }: { defaultVoucherType?: string }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [message, setMessage] = useState('');
+  const [successDialogOpen, setSuccessDialogOpen] = useState(false);
+  const [successDialogMessage, setSuccessDialogMessage] = useState('');
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false);
+  const [errorDialogMessage, setErrorDialogMessage] = useState('');
   const companyId = useAppSelector((s) => s.app.selectedCompanyId);
   const financialYearId = useAppSelector((s) => s.app.selectedFinancialYearId);
   const { register, control, handleSubmit, formState: { errors } } = useForm<{
@@ -45,7 +48,8 @@ export default function VoucherEntry({ defaultVoucherType = 'Receipt' }: { defau
       narration: l.narration,
     }));
     if (lines.length < 2) {
-      setMessage('Add at least 2 lines. Debits must equal credits.');
+      setErrorDialogMessage('Add at least 2 lines. Debits must equal credits.');
+      setErrorDialogOpen(true);
       return;
     }
     try {
@@ -57,10 +61,12 @@ export default function VoucherEntry({ defaultVoucherType = 'Receipt' }: { defau
         narration: data.narration,
         lines,
       });
-      setMessage('Voucher posted.');
+      setSuccessDialogMessage('Voucher posted.');
+      setSuccessDialogOpen(true);
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
-      setMessage(err?.response?.data?.message ?? 'Failed');
+      setErrorDialogMessage(err?.response?.data?.message ?? 'Failed');
+      setErrorDialogOpen(true);
     }
   };
 
@@ -70,7 +76,6 @@ export default function VoucherEntry({ defaultVoucherType = 'Receipt' }: { defau
   return (
     <Box>
       <Typography variant="h4" gutterBottom>Voucher Entry</Typography>
-      {message && <Typography color={message.includes('posted') ? 'primary' : 'error'} sx={{ mb: 2 }}>{message}</Typography>}
       <Paper sx={{ p: 3 }}>
         <form onSubmit={handleSubmit(onSubmit)}>
           <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap' }}>
@@ -111,6 +116,28 @@ export default function VoucherEntry({ defaultVoucherType = 'Receipt' }: { defau
           <Box sx={{ mt: 2 }}><Button type="submit" variant="contained">Post Voucher</Button></Box>
         </form>
       </Paper>
+      <Dialog open={successDialogOpen} onClose={() => setSuccessDialogOpen(false)}>
+        <DialogTitle sx={{ color: '#16a34a' }}>Success</DialogTitle>
+        <DialogContent>
+          <Typography>{successDialogMessage}</Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSuccessDialogOpen(false)} autoFocus variant="contained" sx={{ bgcolor: '#16a34a', '&:hover': { bgcolor: '#15803d' } }}>
+            OK
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog open={errorDialogOpen} onClose={() => setErrorDialogOpen(false)}>
+        <DialogTitle sx={{ color: '#dc2626' }}>Error</DialogTitle>
+        <DialogContent>
+          <Typography>{errorDialogMessage}</Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setErrorDialogOpen(false)} autoFocus variant="contained" sx={{ bgcolor: '#dc2626', '&:hover': { bgcolor: '#b91c1c' } }}>
+            OK
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

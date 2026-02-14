@@ -1,5 +1,6 @@
-import { useEffect, useState, useCallback } from 'react';
-import { useForm } from 'react-hook-form';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { useForm, Controller } from 'react-hook-form';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Box,
   Button,
@@ -17,8 +18,15 @@ import {
   DialogContent,
   DialogActions,
 } from '@mui/material';
+import {
+  Save as SaveIcon,
+  Clear as ClearIcon,
+  Edit as EditIcon,
+  Delete as DeleteIcon,
+} from '@mui/icons-material';
 import { useAppSelector } from '../store/hooks';
 import { ledgerAccountApi, ledgerGroupApi } from '../services/api';
+import DateInput from './DateInput';
 
 type Group = { _id: string; name: string; code: string; type: string; isReceivables?: boolean; isPayables?: boolean };
 type UnderOption = { _id: string; name: string };
@@ -65,15 +73,45 @@ interface FormData {
   paymentTerms: string;
 }
 
-const defaultFormValues: Partial<FormData> = {
-  serviceItem: false,
-  taxable: false,
-  openingBalanceCr: '',
-  openingBalanceDr: '',
+const defaultFormValues: FormData = {
+  name: '',
+  aliasName: '',
+  code: '',
+  groupId: '',
+  address: '',
+  location: '',
+  pincode: '',
+  mobile: '',
+  TRN: '',
+  state: '',
+  stateCode: '',
+  costCentre: '',
   creditLimit: '',
   creditDays: '',
-  discPercent: '',
+  openingBalanceCr: '',
+  openingBalanceDr: '',
+  serviceItem: false,
+  sacHsn: '',
+  taxable: false,
+  area: '',
+  route: '',
+  day: '',
+  district: '',
+  agency: '',
   regDate: new Date().toISOString().slice(0, 10),
+  discPercent: '',
+  category: '',
+  rateType: '',
+  remarks: '',
+  rating: '',
+  story: '',
+  empCode: '',
+  salesMan: '',
+  person: '',
+  agent2: '',
+  phone: '',
+  email: '',
+  paymentTerms: '',
 };
 
 export default function LedgerRegForm({
@@ -85,6 +123,9 @@ export default function LedgerRegForm({
 }) {
   const companyId = useAppSelector((s) => s.app.selectedCompanyId);
   const financialYearId = useAppSelector((s) => s.app.selectedFinancialYearId);
+  const routeLocation = useLocation();
+  const routeNavigate = useNavigate();
+  const prefillAppliedRef = useRef<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [ledgerOptions, setLedgerOptions] = useState<LedgerOption[]>([]);
   const [ledgerSearch, setLedgerSearch] = useState('');
@@ -92,15 +133,27 @@ export default function LedgerRegForm({
   const [receivablesId, setReceivablesId] = useState<string | null>(null);
   const [payablesId, setPayablesId] = useState<string | null>(null);
   const [message, setMessage] = useState('');
-  const [successDialog, setSuccessDialog] = useState<'edited' | 'deleted' | null>(null);
+  const [successDialog, setSuccessDialog] = useState<'saved' | 'edited' | 'deleted' | null>(null);
+  const [confirmSaveOpen, setConfirmSaveOpen] = useState(false);
+  const [pendingFormData, setPendingFormData] = useState<FormData | null>(null);
+  const [pendingAction, setPendingAction] = useState<'save' | 'edit' | null>(null);
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false);
+  const [errorDialogMessage, setErrorDialogMessage] = useState('');
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  
+  // Change Led Name Dialog
+  const [changeNameDialogOpen, setChangeNameDialogOpen] = useState(false);
+  const [changeNameCode, setChangeNameCode] = useState('');
+  const [changeNameValue, setChangeNameValue] = useState('');
+  const [changeNameSaving, setChangeNameSaving] = useState(false);
   const underDisabled = ledgerType === 'Customer' || ledgerType === 'Supplier';
   const defaultGroupId =
     ledgerType === 'Customer' ? receivablesId
     : ledgerType === 'Supplier' ? payablesId
     : '';
 
-  const { register, handleSubmit, formState: { errors }, reset, setValue, watch } = useForm<FormData>({
-    defaultValues: defaultFormValues as FormData,
+  const { register, handleSubmit, formState: { errors }, reset, setValue, watch, control } = useForm<FormData>({
+    defaultValues: defaultFormValues,
   });
 
   const groupIdValue = watch('groupId');
@@ -202,147 +255,255 @@ export default function LedgerRegForm({
   const clearForm = useCallback(() => {
     setSelectedId(null);
     setMessage('');
-    reset(defaultFormValues as FormData);
+    setLedgerSearch('');
+    reset(defaultFormValues);
     if (ledgerType === 'Customer' && receivablesId) setValue('groupId', receivablesId);
     if (ledgerType === 'Supplier' && payablesId) setValue('groupId', payablesId);
   }, [reset, setValue, ledgerType, receivablesId, payablesId]);
 
-  const onLedgerSelect = (_: unknown, value: LedgerOption | null) => {
-    if (!value || !companyId) {
+  // Pre-fill name when navigated from SalesB2C (or similar) with a new customer name
+  useEffect(() => {
+    const state = routeLocation.state as { prefillName?: string; returnTo?: string } | null;
+    if (state?.prefillName && state.prefillName !== prefillAppliedRef.current) {
+      prefillAppliedRef.current = state.prefillName;
       clearForm();
+      setValue('name', state.prefillName);
+      setLedgerSearch(state.prefillName);
+    }
+  }, [routeLocation.state, clearForm, setValue]);
+
+  const onLedgerSelect = (_: unknown, value: LedgerOption | string | null) => {
+    if (!value) {
+      setSelectedId(null);
+      setValue('name', '');
+      setLedgerSearch('');
       return;
     }
+    // If user typed a new name (string)
+    if (typeof value === 'string') {
+      setSelectedId(null);
+      setValue('name', value);
+      setLedgerSearch(value);
+      return;
+    }
+    // If user selected an existing ledger
+    if (!companyId) return;
     ledgerAccountApi.get(value._id, companyId).then((res) => {
       const ledger = res.data.data as Record<string, unknown>;
       if (ledger) {
         setSelectedId(value._id);
+        setLedgerSearch(value.name);
         populateForm(ledger);
       }
     });
   };
 
-  const onSubmit = async (data: FormData) => {
+  const onSubmit = (data: FormData) => {
     if (!companyId) return;
+    if (!data.name || !data.name.trim()) {
+      setErrorDialogMessage('Ledger name is required');
+      setErrorDialogOpen(true);
+      return;
+    }
+    // Show confirmation dialog
+    setPendingFormData(data);
+    setPendingAction('save');
+    setConfirmSaveOpen(true);
+  };
+
+  const handleConfirmSave = async () => {
+    setConfirmSaveOpen(false);
+    if (!pendingFormData || !companyId) return;
+    const data = pendingFormData;
     setMessage('');
-    try {
-      await ledgerAccountApi.create({
-        companyId,
-        financialYearId: financialYearId || undefined,
-        name: data.name,
-        aliasName: data.aliasName || undefined,
-        code: data.code || undefined,
-        groupId: data.groupId,
-        type: ledgerType ?? 'Other',
-        phone: data.phone || undefined,
-        mobile: data.mobile || undefined,
-        email: data.email || undefined,
-        address: data.address || undefined,
-        location: data.location || undefined,
-        pincode: data.pincode || undefined,
-        TRN: data.TRN || undefined,
-        state: data.state || undefined,
-        stateCode: data.stateCode || undefined,
-        costCentre: data.costCentre || undefined,
-        creditLimit: data.creditLimit ? Number(data.creditLimit) : undefined,
-        creditDays: data.creditDays ? Number(data.creditDays) : undefined,
-        paymentTerms: data.paymentTerms || undefined,
-        openingBalanceDr: data.openingBalanceDr ? Number(data.openingBalanceDr) : undefined,
-        openingBalanceCr: data.openingBalanceCr ? Number(data.openingBalanceCr) : undefined,
-        serviceItem: data.serviceItem,
-        sacHsn: data.sacHsn || undefined,
-        taxable: data.taxable,
-        area: data.area || undefined,
-        route: data.route || undefined,
-        day: data.day || undefined,
-        district: data.district || undefined,
-        agency: data.agency || undefined,
-        regDate: data.regDate || undefined,
-        discPercent: data.discPercent ? Number(data.discPercent) : undefined,
-        category: data.category || undefined,
-        rateType: data.rateType || undefined,
-        remarks: data.remarks || undefined,
-        rating: data.rating || undefined,
-        story: data.story || undefined,
-        empCode: data.empCode || undefined,
-        salesMan: data.salesMan || undefined,
-        person: data.person || undefined,
-        agent2: data.agent2 || undefined,
-      });
-      setMessage('Saved.');
-      clearForm();
-    } catch (e: unknown) {
-      const err = e as { response?: { data?: { message?: string } } };
-      setMessage(err?.response?.data?.message ?? 'Failed');
+
+    if (pendingAction === 'edit' && selectedId) {
+      // Edit existing ledger
+      try {
+        await ledgerAccountApi.update(selectedId, {
+          companyId,
+          name: data.name,
+          aliasName: data.aliasName || undefined,
+          groupId: data.groupId,
+          phone: data.phone || undefined,
+          mobile: data.mobile || undefined,
+          email: data.email || undefined,
+          address: data.address || undefined,
+          location: data.location || undefined,
+          pincode: data.pincode || undefined,
+          TRN: data.TRN || undefined,
+          state: data.state || undefined,
+          stateCode: data.stateCode || undefined,
+          costCentre: data.costCentre || undefined,
+          creditLimit: data.creditLimit ? Number(data.creditLimit) : undefined,
+          creditDays: data.creditDays ? Number(data.creditDays) : undefined,
+          paymentTerms: data.paymentTerms || undefined,
+          serviceItem: data.serviceItem,
+          sacHsn: data.sacHsn || undefined,
+          taxable: data.taxable,
+          area: data.area || undefined,
+          route: data.route || undefined,
+          day: data.day || undefined,
+          district: data.district || undefined,
+          agency: data.agency || undefined,
+          regDate: data.regDate || undefined,
+          discPercent: data.discPercent ? Number(data.discPercent) : undefined,
+          category: data.category || undefined,
+          rateType: data.rateType || undefined,
+          remarks: data.remarks || undefined,
+          rating: data.rating || undefined,
+          story: data.story || undefined,
+          empCode: data.empCode || undefined,
+          salesMan: data.salesMan || undefined,
+          person: data.person || undefined,
+          agent2: data.agent2 || undefined,
+        });
+        setPendingFormData(null);
+        setPendingAction(null);
+        setSuccessDialog('edited');
+      } catch (e: unknown) {
+        const err = e as { response?: { data?: { message?: string } } };
+        setErrorDialogMessage(err?.response?.data?.message ?? 'Failed to update ledger');
+        setErrorDialogOpen(true);
+      }
+    } else {
+      // Create new ledger
+      try {
+        await ledgerAccountApi.create({
+          companyId,
+          financialYearId: financialYearId || undefined,
+          name: data.name,
+          aliasName: data.aliasName || undefined,
+          code: data.code || undefined,
+          groupId: data.groupId,
+          type: ledgerType ?? 'Other',
+          phone: data.phone || undefined,
+          mobile: data.mobile || undefined,
+          email: data.email || undefined,
+          address: data.address || undefined,
+          location: data.location || undefined,
+          pincode: data.pincode || undefined,
+          TRN: data.TRN || undefined,
+          state: data.state || undefined,
+          stateCode: data.stateCode || undefined,
+          costCentre: data.costCentre || undefined,
+          creditLimit: data.creditLimit ? Number(data.creditLimit) : undefined,
+          creditDays: data.creditDays ? Number(data.creditDays) : undefined,
+          paymentTerms: data.paymentTerms || undefined,
+          openingBalanceDr: data.openingBalanceDr ? Number(data.openingBalanceDr) : undefined,
+          openingBalanceCr: data.openingBalanceCr ? Number(data.openingBalanceCr) : undefined,
+          serviceItem: data.serviceItem,
+          sacHsn: data.sacHsn || undefined,
+          taxable: data.taxable,
+          area: data.area || undefined,
+          route: data.route || undefined,
+          day: data.day || undefined,
+          district: data.district || undefined,
+          agency: data.agency || undefined,
+          regDate: data.regDate || undefined,
+          discPercent: data.discPercent ? Number(data.discPercent) : undefined,
+          category: data.category || undefined,
+          rateType: data.rateType || undefined,
+          remarks: data.remarks || undefined,
+          rating: data.rating || undefined,
+          story: data.story || undefined,
+          empCode: data.empCode || undefined,
+          salesMan: data.salesMan || undefined,
+          person: data.person || undefined,
+          agent2: data.agent2 || undefined,
+        });
+        setPendingFormData(null);
+        setPendingAction(null);
+        setSuccessDialog('saved');
+      } catch (e: unknown) {
+        const err = e as { response?: { data?: { message?: string } } };
+        setErrorDialogMessage(err?.response?.data?.message ?? 'Failed to save ledger');
+        setErrorDialogOpen(true);
+      }
     }
   };
 
-  const onEdit = async (data: FormData) => {
-    if (!companyId || !selectedId) return;
-    setMessage('');
-    try {
-      await ledgerAccountApi.update(selectedId, {
-        companyId,
-        name: data.name,
-        aliasName: data.aliasName || undefined,
-        groupId: data.groupId,
-        phone: data.phone || undefined,
-        mobile: data.mobile || undefined,
-        email: data.email || undefined,
-        address: data.address || undefined,
-        location: data.location || undefined,
-        pincode: data.pincode || undefined,
-        TRN: data.TRN || undefined,
-        state: data.state || undefined,
-        stateCode: data.stateCode || undefined,
-        costCentre: data.costCentre || undefined,
-        creditLimit: data.creditLimit ? Number(data.creditLimit) : undefined,
-        creditDays: data.creditDays ? Number(data.creditDays) : undefined,
-        paymentTerms: data.paymentTerms || undefined,
-        serviceItem: data.serviceItem,
-        sacHsn: data.sacHsn || undefined,
-        taxable: data.taxable,
-        area: data.area || undefined,
-        route: data.route || undefined,
-        day: data.day || undefined,
-        district: data.district || undefined,
-        agency: data.agency || undefined,
-        regDate: data.regDate || undefined,
-        discPercent: data.discPercent ? Number(data.discPercent) : undefined,
-        category: data.category || undefined,
-        rateType: data.rateType || undefined,
-        remarks: data.remarks || undefined,
-        rating: data.rating || undefined,
-        story: data.story || undefined,
-        empCode: data.empCode || undefined,
-        salesMan: data.salesMan || undefined,
-        person: data.person || undefined,
-        agent2: data.agent2 || undefined,
-      });
-      setSuccessDialog('edited');
-    } catch (e: unknown) {
-      const err = e as { response?: { data?: { message?: string } } };
-      setMessage(err?.response?.data?.message ?? 'Failed');
-    }
+  const handleCancelSave = () => {
+    setConfirmSaveOpen(false);
+    setPendingFormData(null);
+    setPendingAction(null);
   };
 
-  const onDelete = async () => {
+  const onEdit = (data: FormData) => {
     if (!companyId || !selectedId) return;
-    if (!window.confirm('Delete this ledger?')) return;
-    setMessage('');
+    // Show confirmation dialog
+    setPendingFormData(data);
+    setPendingAction('edit');
+    setConfirmSaveOpen(true);
+  };
+
+  const onDelete = () => {
+    if (!companyId || !selectedId) return;
+    setDeleteConfirmOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    setDeleteConfirmOpen(false);
+    if (!companyId || !selectedId) return;
     try {
       await ledgerAccountApi.delete(selectedId, companyId);
       setSuccessDialog('deleted');
       clearForm();
     } catch (e: unknown) {
       const err = e as { response?: { data?: { message?: string } } };
-      setMessage(err?.response?.data?.message ?? 'Failed');
+      setErrorDialogMessage(err?.response?.data?.message ?? 'Failed to delete ledger');
+      setErrorDialogOpen(true);
     }
   };
 
   const closeSuccessDialog = () => {
-    const wasEdited = successDialog === 'edited';
+    const shouldClearForm = successDialog === 'saved' || successDialog === 'edited';
     setSuccessDialog(null);
-    if (wasEdited) clearForm();
+    // If we came from another page (e.g. SalesB2C) and just saved, navigate back
+    const state = routeLocation.state as { returnTo?: string } | null;
+    if (successDialog === 'saved' && state?.returnTo) {
+      prefillAppliedRef.current = null;
+      routeNavigate(state.returnTo);
+      return;
+    }
+    if (shouldClearForm) clearForm();
+  };
+
+  // Change Led Name handlers
+  const handleOpenChangeName = () => {
+    if (!selectedId) return;
+    const selectedLedger = ledgerOptions.find((o) => o._id === selectedId);
+    if (selectedLedger) {
+      setChangeNameCode(selectedLedger.code);
+      setChangeNameValue(selectedLedger.name);
+      setChangeNameDialogOpen(true);
+    }
+  };
+
+  const handleChangeNameSave = async () => {
+    if (!selectedId || !companyId || !changeNameValue.trim()) return;
+    setChangeNameSaving(true);
+    try {
+      await ledgerAccountApi.update(selectedId, {
+        companyId,
+        name: changeNameValue.trim(),
+      });
+      // Update the local state
+      setLedgerOptions((prev) =>
+        prev.map((o) => (o._id === selectedId ? { ...o, name: changeNameValue.trim() } : o))
+      );
+      setLedgerSearch(changeNameValue.trim());
+      setValue('name', changeNameValue.trim());
+      setChangeNameDialogOpen(false);
+      setMessage('Ledger name updated successfully');
+      setTimeout(() => setMessage(''), 2000);
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { message?: string } } };
+      setErrorDialogMessage(err?.response?.data?.message ?? 'Failed to update name');
+      setErrorDialogOpen(true);
+    } finally {
+      setChangeNameSaving(false);
+    }
   };
 
   if (!companyId) return <Typography color="error">Select a company first.</Typography>;
@@ -357,7 +518,7 @@ export default function LedgerRegForm({
       </Box>
       <Paper sx={{ p: 3 }}>
         {message && (
-          <Typography color={message.includes('Failed') ? 'error' : 'primary'} sx={{ mb: 2 }}>
+          <Typography color="success" sx={{ mb: 2, fontWeight: 'bold' }}>
             {message}
           </Typography>
         )}
@@ -367,47 +528,77 @@ export default function LedgerRegForm({
               <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>Ledger details</Typography>
               <Grid container spacing={2}>
                 <Grid item xs={12}>
-                  <Autocomplete
-                    size="small"
-                    options={ledgerOptions}
-                    getOptionLabel={(opt) => (opt ? `${opt.name} (${opt.code})` : '')}
-                    value={ledgerOptions.find((o) => o._id === selectedId) ?? null}
-                    onChange={onLedgerSelect}
-                    onInputChange={(_, v) => setLedgerSearch(v)}
-                    renderInput={(params) => (
-                      <TextField
-                        {...params}
-                        label="Led Name"
-                        placeholder="Search or select ledger"
-                        sx={{ '& .MuiInputBase-input': { fontSize: '0.95rem' } }}
-                      />
-                    )}
-                    renderOption={(props, option) => (
-                      <li {...props} key={option._id} style={{ padding: '10px 14px', fontSize: '0.95rem', minHeight: 40 }}>
-                        <Box>
-                          <Typography variant="body1" fontWeight={500}>{option.name}</Typography>
-                          <Typography variant="body2" color="text.secondary">{option.code}</Typography>
-                        </Box>
-                      </li>
-                    )}
-                    slotProps={{
-                      paper: {
-                        sx: {
-                          fontSize: '0.95rem',
-                          '& .MuiAutocomplete-listbox': { maxHeight: 320 },
+                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+                    <Autocomplete
+                      size="small"
+                      freeSolo
+                      disabled={!!selectedId}
+                      options={ledgerOptions}
+                      getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt?.name ?? '')}
+                      value={selectedId ? ledgerOptions.find((o) => o._id === selectedId) ?? null : (ledgerSearch || null)}
+                      inputValue={ledgerSearch}
+                      onChange={onLedgerSelect}
+                      onInputChange={(_, v, reason) => {
+                        setLedgerSearch(v);
+                        // Update the name field when typing
+                        if (reason === 'input') {
+                          if (!selectedId) {
+                            setValue('name', v);
+                          }
+                        }
+                      }}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Led Name"
+                          required
+                          sx={{ '& .MuiInputBase-input': { fontSize: '0.95rem' } }}
+                          InputLabelProps={{ shrink: true }}
+                        />
+                      )}
+                      renderOption={(props, option) => (
+                        <li {...props} key={option._id} style={{ padding: '10px 14px', fontSize: '0.95rem', minHeight: 40 }}>
+                          <Box>
+                            <Typography variant="body1" fontWeight={500}>{option.name}</Typography>
+                            <Typography variant="body2" color="text.secondary">{option.code}</Typography>
+                          </Box>
+                        </li>
+                      )}
+                      slotProps={{
+                        paper: {
+                          sx: {
+                            fontSize: '0.95rem',
+                            '& .MuiAutocomplete-listbox': { maxHeight: 320 },
+                          },
                         },
-                      },
-                    }}
-                    sx={{
-                      '& .MuiOutlinedInput-root': { fontSize: '0.95rem' },
-                    }}
-                  />
+                      }}
+                      sx={{
+                        flex: 1,
+                        '& .MuiOutlinedInput-root': { fontSize: '0.95rem' },
+                      }}
+                    />
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      onClick={handleOpenChangeName}
+                      disabled={!selectedId}
+                      sx={{ 
+                        minWidth: 'auto', 
+                        px: 1, 
+                        py: 0.9,
+                        fontSize: '0.7rem',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      Change Name
+                    </Button>
+                  </Box>
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Alias Name" {...register('aliasName')} disabled={isEditMode} />
+                  <TextField fullWidth size="small" label="Alias Name" {...register('aliasName')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Account Code" {...register('code')} placeholder="Auto" disabled={isEditMode} />
+                  <TextField fullWidth size="small" label="Account Code" {...register('code')} helperText="Auto-generated when empty" InputLabelProps={{ shrink: true }} disabled />
                 </Grid>
                 <Grid item xs={6}>
                   <TextField
@@ -422,6 +613,7 @@ export default function LedgerRegForm({
                     onChange={(e) => setValue('groupId', e.target.value, { shouldValidate: true })}
                     error={!!errors.groupId}
                     helperText={errors.groupId?.message}
+                    InputLabelProps={{ shrink: true }}
                   >
                     {underOptions.map((opt) => (
                       <MenuItem key={opt._id} value={opt._id}>{opt.name}</MenuItem>
@@ -429,31 +621,28 @@ export default function LedgerRegForm({
                   </TextField>
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Name" required {...register('name', { required: 'Required' })} error={!!errors.name} helperText={errors.name?.message} disabled={isEditMode} />
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Address" multiline rows={2} {...register('address')} />
+                  <TextField fullWidth size="small" label="Address" multiline rows={2} {...register('address')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Location" {...register('location')} />
+                  <TextField fullWidth size="small" label="Location" {...register('location')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Pincode" {...register('pincode')} />
+                  <TextField fullWidth size="small" label="Pincode" {...register('pincode')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Mobile" {...register('mobile')} />
+                  <TextField fullWidth size="small" label="Mobile" {...register('mobile')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Vat No." {...register('TRN')} />
+                  <TextField fullWidth size="small" label="Vat No." {...register('TRN')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="State" {...register('state')} />
+                  <TextField fullWidth size="small" label="State" {...register('state')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Code" {...register('stateCode')} />
+                  <TextField fullWidth size="small" label="Code" {...register('stateCode')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Cost Centre" {...register('costCentre')} />
+                  <TextField fullWidth size="small" label="Cost Centre" {...register('costCentre')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
                   <TextField fullWidth size="small" type="number" label="Credit Limit" {...register('creditLimit')} inputProps={{ min: 0, step: 0.01 }} InputLabelProps={{ shrink: true }} />
@@ -462,14 +651,14 @@ export default function LedgerRegForm({
                   <TextField fullWidth size="small" type="number" label="Days" {...register('creditDays')} inputProps={{ min: 0 }} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" type="number" label="Old Balance Cr (AED)" {...register('openingBalanceCr')} inputProps={{ min: 0, step: 0.01 }} disabled={isEditMode} InputLabelProps={{ shrink: true }} />
+                  <TextField fullWidth size="small" type="number" label="Old Balance Cr (AED)" {...register('openingBalanceCr')} inputProps={{ min: 0, step: 0.01 }} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" type="number" label="Old Balance Dr (AED)" {...register('openingBalanceDr')} inputProps={{ min: 0, step: 0.01 }} disabled={isEditMode} InputLabelProps={{ shrink: true }} />
+                  <TextField fullWidth size="small" type="number" label="Old Balance Dr (AED)" {...register('openingBalanceDr')} inputProps={{ min: 0, step: 0.01 }} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={12}>
                   <FormControlLabel control={<Checkbox {...register('serviceItem')} />} label="Service Item" />
-                  <TextField size="small" label="SAC/HSN" {...register('sacHsn')} sx={{ ml: 2, width: 160 }} />
+                  <TextField size="small" label="SAC/HSN" {...register('sacHsn')} sx={{ ml: 2, width: 160 }} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={12}>
                   <FormControlLabel control={<Checkbox {...register('taxable')} />} label="Taxable" />
@@ -481,94 +670,205 @@ export default function LedgerRegForm({
               <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>Additional details</Typography>
               <Grid container spacing={2}>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Area" {...register('area')} />
+                  <TextField fullWidth size="small" label="Area" {...register('area')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Route" {...register('route')} />
+                  <TextField fullWidth size="small" label="Route" {...register('route')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Day" {...register('day')} />
+                  <TextField fullWidth size="small" label="Day" {...register('day')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="District" {...register('district')} />
+                  <TextField fullWidth size="small" label="District" {...register('district')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Agency" {...register('agency')} />
+                  <TextField fullWidth size="small" label="Agency" {...register('agency')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField fullWidth size="small" type="date" label="Reg Date" InputLabelProps={{ shrink: true }} {...register('regDate')} />
+                  <Controller name="regDate" control={control} render={({ field }) => <DateInput label="Reg Date" value={field.value || ''} onChange={field.onChange} size="small" />} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" type="number" label="Disc %" {...register('discPercent')} inputProps={{ min: 0, max: 100, step: 0.01 }} />
+                  <TextField fullWidth size="small" type="number" label="Disc %" {...register('discPercent')} inputProps={{ min: 0, max: 100, step: 0.01 }} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Category" {...register('category')} />
+                  <TextField fullWidth size="small" label="Category" {...register('category')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Rate Type" {...register('rateType')} />
+                  <TextField fullWidth size="small" label="Rate Type" {...register('rateType')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Rating" {...register('rating')} />
+                  <TextField fullWidth size="small" label="Rating" {...register('rating')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Remarks" {...register('remarks')} />
+                  <TextField fullWidth size="small" label="Remarks" {...register('remarks')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Story" {...register('story')} />
+                  <TextField fullWidth size="small" label="Story" {...register('story')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="EmpCode" {...register('empCode')} />
+                  <TextField fullWidth size="small" label="EmpCode" {...register('empCode')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Sales Man" {...register('salesMan')} />
+                  <TextField fullWidth size="small" label="Sales Man" {...register('salesMan')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Person" {...register('person')} />
+                  <TextField fullWidth size="small" label="Person" {...register('person')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Agent2" {...register('agent2')} />
+                  <TextField fullWidth size="small" label="Agent2" {...register('agent2')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="Tel No" {...register('phone')} />
+                  <TextField fullWidth size="small" label="Tel No" {...register('phone')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField fullWidth size="small" label="E Mail" type="email" {...register('email')} />
+                  <TextField fullWidth size="small" label="E Mail" type="email" {...register('email')} InputLabelProps={{ shrink: true }} />
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField fullWidth size="small" label="Payment Terms" {...register('paymentTerms')} />
+                  <TextField fullWidth size="small" label="Payment Terms" {...register('paymentTerms')} InputLabelProps={{ shrink: true }} />
                 </Grid>
               </Grid>
             </Grid>
           </Grid>
 
-          <Box sx={{ mt: 3, display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-            <Button type="submit" variant="contained" disabled={isEditMode}>
-              Save
+          <Box sx={{ mt: 3, display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
+            <Button 
+              type="submit" 
+              variant="contained" 
+              disabled={isEditMode}
+              startIcon={<SaveIcon />}
+              sx={{ bgcolor: '#1976d2', '&:hover': { bgcolor: '#1565c0' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
+            >
+              SAVE
             </Button>
-            <Button type="button" variant="outlined" onClick={clearForm}>
-              Clear
+            <Button 
+              type="button" 
+              variant="contained" 
+              onClick={clearForm}
+              startIcon={<ClearIcon />}
+              sx={{ bgcolor: '#00bcd4', '&:hover': { bgcolor: '#00acc1' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
+            >
+              CLEAR
             </Button>
-            <Button type="button" variant="contained" disabled={!isEditMode} onClick={() => handleSubmit(onEdit)()}>
-              Edit
+            <Button 
+              type="button" 
+              variant="contained" 
+              disabled={!isEditMode} 
+              onClick={() => handleSubmit(onEdit)()}
+              startIcon={<EditIcon />}
+              sx={{ bgcolor: '#607d8b', '&:hover': { bgcolor: '#546e7a' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
+            >
+              EDIT
             </Button>
-            <Button type="button" variant="outlined" color="error" disabled={!isEditMode} onClick={onDelete}>
-              Delete
+            <Button 
+              type="button" 
+              variant="contained" 
+              disabled={!isEditMode} 
+              onClick={onDelete}
+              startIcon={<DeleteIcon />}
+              sx={{ bgcolor: '#f44336', '&:hover': { bgcolor: '#d32f2f' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
+            >
+              DELETE
             </Button>
           </Box>
         </form>
       </Paper>
 
-      <Dialog open={!!successDialog} onClose={closeSuccessDialog}>
-        <DialogTitle>{successDialog === 'edited' ? 'Edited' : 'Deleted'}</DialogTitle>
+      {/* Confirmation Dialog */}
+      <Dialog open={confirmSaveOpen} onClose={handleCancelSave}>
+        <DialogTitle>Confirm {pendingAction === 'edit' ? 'Update' : 'Save'}</DialogTitle>
         <DialogContent>
           <Typography>
-            {successDialog === 'edited' ? 'Ledger has been updated successfully.' : 'Ledger has been deleted successfully.'}
+            Do you want to {pendingAction === 'edit' ? 'update' : 'save'} this ledger?
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCancelSave} variant="outlined">
+            No
+          </Button>
+          <Button onClick={handleConfirmSave} variant="contained" autoFocus>
+            Yes
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Success Dialog */}
+      <Dialog open={!!successDialog} onClose={closeSuccessDialog}>
+        <DialogTitle>
+          {successDialog === 'saved' ? 'Saved' : successDialog === 'edited' ? 'Edited' : 'Deleted'}
+        </DialogTitle>
+        <DialogContent>
+          <Typography>
+            {successDialog === 'saved'
+              ? 'Ledger has been saved successfully.'
+              : successDialog === 'edited'
+              ? 'Ledger has been updated successfully.'
+              : 'Ledger has been deleted successfully.'}
           </Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={closeSuccessDialog} variant="contained" autoFocus>
             OK
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Change Led Name Dialog */}
+      <Dialog open={changeNameDialogOpen} onClose={() => setChangeNameDialogOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Change Ledger Name</DialogTitle>
+        <DialogContent>
+          <TextField
+            fullWidth
+            size="small"
+            label="Led Code"
+            value={changeNameCode}
+            disabled
+            margin="normal"
+            InputLabelProps={{ shrink: true }}
+          />
+          <TextField
+            fullWidth
+            size="small"
+            label="Led Name"
+            value={changeNameValue}
+            onChange={(e) => setChangeNameValue(e.target.value)}
+            margin="normal"
+            required
+            autoFocus
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setChangeNameDialogOpen(false)}>Cancel</Button>
+          <Button 
+            variant="contained" 
+            onClick={handleChangeNameSave}
+            disabled={changeNameSaving || !changeNameValue.trim()}
+            autoFocus
+          >
+            {changeNameSaving ? 'Updating...' : 'Update'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Error Dialog */}
+      <Dialog open={errorDialogOpen} onClose={() => setErrorDialogOpen(false)} PaperProps={{ sx: { borderRadius: 2, minWidth: 350 } }}>
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#dc2626' }}>Error</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>{errorDialogMessage}</Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button variant="contained" onClick={() => setErrorDialogOpen(false)} autoFocus sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#dc2626', '&:hover': { bgcolor: '#b91c1c' }, boxShadow: 'none' }}>OK</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteConfirmOpen} onClose={() => setDeleteConfirmOpen(false)} PaperProps={{ sx: { borderRadius: 2, minWidth: 350 } }}>
+        <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#dc2626' }}>Delete Ledger</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>Are you sure you want to delete this ledger? This action cannot be undone.</Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
+          <Button onClick={() => setDeleteConfirmOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>Cancel</Button>
+          <Button variant="contained" color="error" onClick={handleDeleteConfirm} autoFocus sx={{ textTransform: 'none', borderRadius: 1.5, boxShadow: 'none' }}>Delete</Button>
         </DialogActions>
       </Dialog>
     </Box>
