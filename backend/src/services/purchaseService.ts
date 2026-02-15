@@ -6,6 +6,7 @@ import { LedgerAccount } from '../models/LedgerAccount';
 import { LedgerGroup } from '../models/LedgerGroup';
 import { AppError } from '../middlewares/errorHandler';
 import * as voucherService from './voucherService';
+import * as billReferenceService from './billReferenceService';
 
 export interface PurchaseBatchInput {
   productId: string;
@@ -32,6 +33,7 @@ export interface CreatePurchaseInput {
   supplierId?: string;
   supplierName?: string;
   vatType?: 'Vat' | 'NonVat';
+  taxMode?: 'inclusive' | 'exclusive';
   narration?: string;
   batches: PurchaseBatchInput[];
   itemsDiscount?: number;
@@ -271,11 +273,34 @@ export async function createPurchase(input: CreatePurchaseInput): Promise<{
     }
   }
 
-  // 3. Create voucher/ledger entries for the purchase (same pattern as Sales B2C)
+  // 3. Create voucher/ledger entries — mandatory; rollback purchase if this fails
   try {
     await createPurchaseVoucher(input.companyId, input.financialYearId, purchaseId.toString(), input.invoiceNo, purchaseDate, input, totalAmount, itemsDiscount, otherDiscount, otherCharges, freightCharge, roundOff);
   } catch (err) {
-    console.error(`[Purchase ${input.invoiceNo}] Voucher creation failed:`, err);
+    await PurchaseInvoice.deleteOne({ _id: purchaseId });
+    await InventoryTransaction.deleteMany({ referenceType: 'Purchase', referenceId: purchaseId });
+    console.error(`[Purchase ${input.invoiceNo}] Voucher creation failed — purchase rolled back:`, err);
+    throw err;
+  }
+
+  // 4. Create bill reference ("New Ref" — payable to supplier)
+  if (input.supplierId && totalAmount > 0) {
+    try {
+      await billReferenceService.createNewRef({
+        companyId: input.companyId,
+        financialYearId: input.financialYearId,
+        ledgerAccountId: input.supplierId,
+        billNumber: input.invoiceNo,
+        referenceType: 'PurchaseInvoice',
+        referenceId: purchaseId.toString(),
+        date: purchaseDate,
+        amount: totalAmount - itemsDiscount + otherCharges + freightCharge + roundOff - otherDiscount,
+        drCr: 'Cr',
+        narration: `Purchase ${input.invoiceNo}`,
+      });
+    } catch (err) {
+      console.error(`[Purchase ${input.invoiceNo}] Bill reference creation failed:`, err);
+    }
   }
 
   return {
@@ -311,14 +336,7 @@ export async function updatePurchase(
     referenceId: purchaseId,
   });
 
-  // 1b. Delete old voucher if exists
-  if (existing.voucherId) {
-    try {
-      await voucherService.deleteVoucher(existing.voucherId.toString());
-    } catch (err) {
-      console.error(`[Purchase ${input.invoiceNo}] Old voucher deletion failed:`, err);
-    }
-  }
+  // 1b. Keep old voucher until new one is created (delete after step 4)
 
   // 2. Update PurchaseInvoice header + batches
   let totalAmount = 0;
@@ -440,14 +458,39 @@ export async function updatePurchase(
     }
   }
 
-  // 4. Create new voucher/ledger entries
-  try {
-    const voucherId = await createPurchaseVoucher(input.companyId, input.financialYearId, purchaseId, input.invoiceNo, purchaseDate, input, totalAmount, itemsDiscount, otherDiscount, otherCharges, freightCharge, roundOff);
-    if (voucherId) {
-      await PurchaseInvoice.updateOne({ _id: purchaseId }, { $set: { voucherId } });
+  // 4. Create new voucher/ledger entries — mandatory; do not delete old voucher until this succeeds
+  const newVoucherId = await createPurchaseVoucher(input.companyId, input.financialYearId, purchaseId, input.invoiceNo, purchaseDate, input, totalAmount, itemsDiscount, otherDiscount, otherCharges, freightCharge, roundOff);
+  if (!newVoucherId) {
+    throw new AppError('Failed to create ledger voucher for purchase', 500);
+  }
+
+  // 4b. Delete old voucher only after new one is created and linked
+  if (existing.voucherId && existing.voucherId.toString() !== newVoucherId) {
+    try {
+      await voucherService.deleteVoucher(existing.voucherId.toString());
+    } catch (err) {
+      console.error(`[Purchase ${input.invoiceNo}] Old voucher deletion failed:`, err);
     }
-  } catch (err) {
-    console.error(`[Purchase ${input.invoiceNo}] Voucher creation failed:`, err);
+  }
+
+  // 5. Update bill reference ("New Ref" — payable to supplier)
+  if (input.supplierId && totalAmount > 0) {
+    try {
+      await billReferenceService.createNewRef({
+        companyId: input.companyId,
+        financialYearId: input.financialYearId,
+        ledgerAccountId: input.supplierId,
+        billNumber: input.invoiceNo,
+        referenceType: 'PurchaseInvoice',
+        referenceId: purchaseId,
+        date: purchaseDate,
+        amount: totalAmount - itemsDiscount + otherCharges + freightCharge + roundOff - otherDiscount,
+        drCr: 'Cr',
+        narration: `Purchase ${input.invoiceNo}`,
+      });
+    } catch (err) {
+      console.error(`[Purchase ${input.invoiceNo}] Bill reference update failed:`, err);
+    }
   }
 
   return {
@@ -472,15 +515,34 @@ async function createPurchaseVoucher(
   freightCharge: number,
   roundOff: number,
 ): Promise<string | null> {
-  // Calculate VAT
+  // Calculate VAT (match frontend: inclusive = extract from amount, exclusive = on top)
   const VAT_RATE = 5;
   const isVat = (input.vatType || 'Vat') === 'Vat';
-  const netAmountBeforeAdjustments = totalAmount; // gross - item discounts already deducted
-  const grandTotal = netAmountBeforeAdjustments - otherDiscount + otherCharges + freightCharge + roundOff;
-  let vatAmount = 0;
+  const taxMode = input.taxMode ?? 'inclusive';
+  const netAmountBeforeAdjustments = totalAmount;
+  let itemsVat = 0;
   if (isVat) {
-    vatAmount = parseFloat((netAmountBeforeAdjustments * VAT_RATE / (100 + VAT_RATE)).toFixed(2));
+    if (taxMode === 'inclusive') {
+      itemsVat = parseFloat((netAmountBeforeAdjustments * VAT_RATE / (100 + VAT_RATE)).toFixed(2));
+    } else {
+      itemsVat = parseFloat((netAmountBeforeAdjustments * VAT_RATE / 100).toFixed(2));
+    }
   }
+  // When Vat: adjustments are inclusive — total VAT includes VAT in adjustments; post net to adjustment ledgers
+  const netAdjustments = otherCharges + freightCharge + roundOff - otherDiscount;
+  const vatFromAdjustments = isVat && netAdjustments !== 0
+    ? parseFloat((netAdjustments * VAT_RATE / (100 + VAT_RATE)).toFixed(2))
+    : 0;
+  const totalVat = parseFloat((itemsVat + vatFromAdjustments).toFixed(2));
+  const netFactor = isVat ? 100 / (100 + VAT_RATE) : 1;
+  const otherDiscountNet = parseFloat((otherDiscount * netFactor).toFixed(2));
+  const otherChargesNet = parseFloat((otherCharges * netFactor).toFixed(2));
+  const freightChargeNet = parseFloat((freightCharge * netFactor).toFixed(2));
+  const roundOffNet = parseFloat((roundOff * netFactor).toFixed(2));
+
+  // Inclusive: totalAmount is inclusive; Exclusive: totalAmount is net, so add itemsVat for amount owed
+  const subTotalBeforeAdjustments = (taxMode === 'inclusive' && isVat) ? netAmountBeforeAdjustments : (netAmountBeforeAdjustments + itemsVat);
+  const grandTotal = subTotalBeforeAdjustments - otherDiscount + otherCharges + freightCharge + roundOff;
 
   // Find or create required ledger accounts
   const purchaseLedger = await findOrCreatePurchaseLedger(companyId);
@@ -489,11 +551,10 @@ async function createPurchaseVoucher(
     : await findOrCreateSpecialLedger(companyId, 'Cash Account', 'Other', 'Asset');
 
   if (!supplierLedger) {
-    console.error(`[Purchase ${invoiceNo}] Supplier ledger not found`);
-    return null;
+    throw new AppError('Supplier/Cash ledger not found. Cannot post purchase to ledger.', 400);
   }
 
-  const vatLedger = isVat && vatAmount > 0
+  const vatLedger = isVat && totalVat > 0
     ? await findOrCreateVatInputLedger(companyId) : null;
 
   // Look up special ledger accounts (only when non-zero)
@@ -512,7 +573,9 @@ async function createPurchaseVoucher(
   const voucherLines: { ledgerAccountId: string; debitAmount: number; creditAmount: number; narration: string }[] = [];
 
   // Debit: Purchase Account (net purchase amount excluding VAT)
-  const purchaseNetAmount = isVat ? parseFloat((netAmountBeforeAdjustments - vatAmount).toFixed(2)) : netAmountBeforeAdjustments;
+  const purchaseNetAmount = isVat && taxMode === 'inclusive'
+    ? parseFloat((netAmountBeforeAdjustments - itemsVat).toFixed(2))
+    : netAmountBeforeAdjustments;
   voucherLines.push({
     ledgerAccountId: purchaseLedger._id.toString(),
     debitAmount: purchaseNetAmount,
@@ -520,11 +583,11 @@ async function createPurchaseVoucher(
     narration: `Purchase ${invoiceNo}`,
   });
 
-  // Debit: VAT Input/Receivable
-  if (vatLedger && vatAmount > 0) {
+  // Debit: VAT Input/Receivable (total input VAT = items + VAT in adjustments when Vat)
+  if (vatLedger && totalVat > 0) {
     voucherLines.push({
       ledgerAccountId: vatLedger._id.toString(),
-      debitAmount: vatAmount,
+      debitAmount: totalVat,
       creditAmount: 0,
       narration: `Purchase ${invoiceNo} - VAT Input`,
     });
@@ -548,44 +611,60 @@ async function createPurchaseVoucher(
     });
   }
 
-  // Credit: Other Discount on Purchase
+  // Credit: Other Discount on Purchase (net = VAT-excluded when Vat)
   if (otherDiscountLedger && otherDiscount > 0) {
     voucherLines.push({
       ledgerAccountId: otherDiscountLedger._id.toString(),
       debitAmount: 0,
-      creditAmount: otherDiscount,
+      creditAmount: otherDiscountNet,
       narration: `Purchase ${invoiceNo} - Other Discount`,
     });
   }
 
-  // Debit: Other Charges on Purchase (additional expense)
+  // Debit: Other Charges on Purchase (net when Vat)
   if (otherChargesLedger && otherCharges > 0) {
     voucherLines.push({
       ledgerAccountId: otherChargesLedger._id.toString(),
-      debitAmount: otherCharges,
+      debitAmount: otherChargesNet,
       creditAmount: 0,
       narration: `Purchase ${invoiceNo} - Other Charges`,
     });
   }
 
-  // Debit: Freight Charges on Purchase (additional expense)
+  // Debit: Freight Charges on Purchase (net when Vat)
   if (freightChargesLedger && freightCharge > 0) {
     voucherLines.push({
       ledgerAccountId: freightChargesLedger._id.toString(),
-      debitAmount: freightCharge,
+      debitAmount: freightChargeNet,
       creditAmount: 0,
       narration: `Purchase ${invoiceNo} - Freight Charges`,
     });
   }
 
-  // Round Off on Purchase (debit if positive, credit if negative)
+  // Round Off on Purchase (net when Vat; debit if positive, credit if negative)
   if (roundOffLedger && Math.abs(roundOff) > 0.001) {
     voucherLines.push({
       ledgerAccountId: roundOffLedger._id.toString(),
-      debitAmount: roundOff > 0 ? roundOff : 0,
-      creditAmount: roundOff < 0 ? Math.abs(roundOff) : 0,
+      debitAmount: roundOffNet > 0 ? roundOffNet : 0,
+      creditAmount: roundOffNet < 0 ? Math.abs(roundOffNet) : 0,
       narration: `Purchase ${invoiceNo} - Round Off`,
     });
+  }
+
+  // Ensure voucher balances: absorb rounding errors in supplier line (up to 0.50); larger = bug
+  const totalDebit = voucherLines.reduce((s, l) => s + l.debitAmount, 0);
+  const totalCredit = voucherLines.reduce((s, l) => s + l.creditAmount, 0);
+  const diff = parseFloat((totalDebit - totalCredit).toFixed(2));
+  if (Math.abs(diff) > 0.01) {
+    if (Math.abs(diff) > 0.50) {
+      throw new AppError(`Voucher unbalanced: debit ${totalDebit.toFixed(2)} vs credit ${totalCredit.toFixed(2)}. Check amounts.`, 400);
+    }
+    const supplierLine = voucherLines.find((l) => l.ledgerAccountId === supplierLedger._id.toString() && l.creditAmount > 0);
+    if (supplierLine) {
+      supplierLine.creditAmount = parseFloat((supplierLine.creditAmount + diff).toFixed(2));
+    } else {
+      throw new AppError(`Voucher unbalanced: debit ${totalDebit.toFixed(2)} vs credit ${totalCredit.toFixed(2)}`, 400);
+    }
   }
 
   // Create voucher
@@ -631,6 +710,7 @@ export async function listPurchases(
 export async function getPurchaseById(id: string) {
   const doc = await PurchaseInvoice.findById(id)
     .populate('supplierId', 'name code')
+    .populate('voucherId', 'voucherNo')
     .lean();
   if (!doc) throw new AppError('Purchase invoice not found', 404);
   return formatPurchaseDoc(doc);
@@ -640,6 +720,7 @@ export async function getPurchaseById(id: string) {
 export async function getPurchaseByInvoiceNo(companyId: string, invoiceNo: string) {
   const doc = await PurchaseInvoice.findOne({ companyId, invoiceNo })
     .populate('supplierId', 'name code')
+    .populate('voucherId', 'voucherNo')
     .lean();
   if (!doc) throw new AppError('Purchase invoice not found', 404);
   return formatPurchaseDoc(doc);
@@ -665,6 +746,7 @@ export async function getNextInvoiceNo(companyId: string): Promise<string> {
 // ─── Helper: format Mongo doc for API response ────────────
 function formatPurchaseDoc(doc: any) {
   const supplier = doc.supplierId as any;
+  const voucher = doc.voucherId as any;
   return {
     _id: doc._id.toString(),
     companyId: doc.companyId.toString(),
@@ -682,6 +764,8 @@ function formatPurchaseDoc(doc: any) {
     otherCharges: doc.otherCharges ?? 0,
     freightCharge: doc.freightCharge ?? 0,
     roundOff: doc.roundOff ?? 0,
+    voucherId: doc.voucherId ? doc.voucherId.toString() : undefined,
+    voucherNo: voucher && typeof voucher === 'object' ? voucher.voucherNo : undefined,
     batches: (doc.batches || []).map((b: any) => ({
       productId: b.productId.toString(),
       productCode: b.productCode || '',

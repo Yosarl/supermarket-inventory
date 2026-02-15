@@ -82,6 +82,8 @@ interface LineItem {
   quantity: number;
   /** Total available stock for this product in BASE UNIT pieces (not multi-unit qty) */
   baseStockPieces: number;
+  /** When set, user can only enter up to this many pieces (selected batch qty); caps quantity to this batch */
+  batchMaxPieces?: number;
   price: number;
   purchasePrice: number;
   gross: number;
@@ -282,6 +284,9 @@ export default function SalesB2C() {
   // Store original invoice items when editing — used to add back stock during pre-save check
   const originalInvoiceItemsRef = useRef<Array<{ productId: string; quantity: number; unitConversion: number }>>([]);
 
+  // When QTY exceeds stock, store lineId to refocus after dialog closes
+  const qtyOverflowLineIdRef = useRef<string | null>(null);
+
   // Row edit commit/revert: snapshot stores old row data before editing
   const rowSnapshotRef = useRef<{ lineId: string; data: LineItem } | null>(null);
   const rowCommittedRef = useRef(false);
@@ -391,6 +396,14 @@ export default function SalesB2C() {
   // Invoice Navigation
   const [invoiceIds, setInvoiceIds] = useState<string[]>([]);
 
+  // Numeric field editing: keep raw string (e.g. ".02", "10.0") while typing; parse on blur
+  const [editingNumericCell, setEditingNumericCell] = useState<{ lineId?: string; field: string; value: string } | null>(null);
+  const parseNumericInput = (raw: string): number => {
+    if (raw === '' || raw === '-') return 0;
+    const normalized = raw === '.' || (/^\.\d*$/.test(raw)) ? '0' + raw : raw;
+    return parseFloat(normalized) || 0;
+  };
+
   // Derive multi-unit info from current lines state (always up-to-date)
   const activeMultiUnitInfo = useMemo(() => {
     if (!activeLineId) return null;
@@ -463,6 +476,12 @@ export default function SalesB2C() {
     const itemsGross = lines.reduce((sum, l) => sum + l.gross, 0);
     const itemsDiscount = lines.reduce((sum, l) => sum + l.discAmount, 0);
     const itemsVat = lines.reduce((sum, l) => sum + l.vatAmount, 0);
+    // When Vat: adjustments (other disc, other charges, freight, travel, round off) are inclusive of tax — extract VAT
+    const netAdjustments = otherCharges + freightCharge + lendAddLess + roundOff - otherDiscount;
+    const vatFromAdjustments = vatType === 'Vat' && netAdjustments !== 0
+      ? parseFloat((netAdjustments * VAT_RATE / (100 + VAT_RATE)).toFixed(2))
+      : 0;
+    const totalVat = itemsVat + vatFromAdjustments;
     // Use sum of line totals — works correctly for both inclusive & exclusive tax
     const subTotal = lines.reduce((sum, l) => sum + l.total, 0);
     const grandTotal = subTotal - otherDiscount + otherCharges + freightCharge + lendAddLess + roundOff;
@@ -475,8 +494,8 @@ export default function SalesB2C() {
       const cost = isMulti ? l.purchasePrice * unit!.conversion! : l.purchasePrice;
       return sum + ((l.price - cost) * l.quantity);
     }, 0);
-    return { itemsGross, itemsDiscount, itemsVat, subTotal, grandTotal, balance, netBalance, totalItems, totalProfit };
-  }, [lines, otherDiscount, otherCharges, freightCharge, lendAddLess, roundOff, cashReceived, cardAmount, oldBalance]);
+    return { itemsGross, itemsDiscount, itemsVat, vatFromAdjustments, totalVat, subTotal, grandTotal, balance, netBalance, totalItems, totalProfit };
+  }, [lines, otherDiscount, otherCharges, freightCharge, lendAddLess, roundOff, cashReceived, cardAmount, oldBalance, vatType]);
 
   // Handle other discount percentage change (uses memoized subTotal)
   const handleOtherDiscPercentChange = useCallback((percent: number) => {
@@ -645,21 +664,25 @@ export default function SalesB2C() {
           if (line.id !== id) return line;
           const updated = { ...line, [field]: value };
 
-          // Cap quantity to available stock (dynamic — considers ALL other rows for same product)
-          if (field === 'quantity' && updated.baseStockPieces > 0 && updated.productId) {
-            // Sum stock used by OTHER rows for the same product (in base pieces)
-            const usedByOtherRows = prev.reduce((sum, l) => {
-              if (l.id === id || l.productId !== updated.productId) return sum;
-              const u = l.availableUnits.find((au) => au.id === l.unitId);
-              const conv = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
-              return sum + (l.quantity * conv);
-            }, 0);
-            const remainingPieces = updated.baseStockPieces - usedByOtherRows;
-            // Convert remaining pieces to current unit's max qty
+          // Cap quantity to available stock (or to batch max when a batch was selected)
+          if (field === 'quantity' && updated.productId) {
             const currentUnit = updated.availableUnits.find((u) => u.id === updated.unitId);
             const conv = (currentUnit?.isMultiUnit && currentUnit?.conversion) ? currentUnit.conversion : 1;
-            const maxQtyForThisRow = remainingPieces / conv;
-            if (updated.quantity > maxQtyForThisRow) {
+            let maxQtyForThisRow = 0;
+            if (updated.batchMaxPieces != null && updated.batchMaxPieces > 0) {
+              // User selected a batch — cap to that batch's quantity only
+              maxQtyForThisRow = updated.batchMaxPieces / conv;
+            } else if (updated.baseStockPieces > 0) {
+              const usedByOtherRows = prev.reduce((sum, l) => {
+                if (l.id === id || l.productId !== updated.productId) return sum;
+                const u = l.availableUnits.find((au) => au.id === l.unitId);
+                const c = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
+                return sum + (l.quantity * c);
+              }, 0);
+              const remainingPieces = updated.baseStockPieces - usedByOtherRows;
+              maxQtyForThisRow = remainingPieces / conv;
+            }
+            if (maxQtyForThisRow > 0 && updated.quantity > maxQtyForThisRow) {
               updated.quantity = Math.max(parseFloat(maxQtyForThisRow.toFixed(4)), 0);
             }
           }
@@ -716,37 +739,43 @@ export default function SalesB2C() {
       // Always use per-piece purchase rate from the product (backend keeps this updated to per-piece)
       const purchaseRate = (product as any).purchasePrice ?? selectedBatch?.purchasePrice ?? 0;
       
-      // Fetch actual net stock from backend (purchases - sales)
+      // Fetch actual net stock from backend (or use batch quantity when a batch is selected)
       let totalStock = 0;
-      try {
-        if (companyId) {
-          const stockRes = await stockApi.getProductStock(companyId, product._id);
-          totalStock = stockRes.data.data?.stock ?? 0;
+      if (selectedBatch) {
+        totalStock = selectedBatch.quantity;
+      } else {
+        try {
+          if (companyId) {
+            const stockRes = await stockApi.getProductStock(companyId, product._id);
+            totalStock = stockRes.data.data?.stock ?? 0;
+          }
+        } catch {
+          totalStock = (product as any).stock ?? (product as any).quantity ?? 0;
         }
-      } catch {
-        totalStock = selectedBatch?.quantity || ((product as any).stock ?? ((product as any).quantity ?? 0));
       }
 
       // When editing an existing invoice, add back the original quantities for this product
       // (they were already deducted from stock when the invoice was first saved)
-      if (invoiceId && originalInvoiceItemsRef.current.length > 0) {
+      if (!selectedBatch && invoiceId && originalInvoiceItemsRef.current.length > 0) {
         const originalPieces = originalInvoiceItemsRef.current
           .filter((o) => o.productId === product._id)
           .reduce((sum, o) => sum + (o.quantity * o.unitConversion), 0);
         totalStock += originalPieces;
       }
 
-      // Subtract quantities already used by other rows in this invoice for the same product
-      const usedInGrid = lines.reduce((sum, l) => {
-        if (l.productId === product._id && l.id !== lineId) {
-          // Account for multi-unit conversion
-          const unit = l.availableUnits.find((u) => u.id === l.unitId);
-          const conv = (unit?.isMultiUnit && unit?.conversion) ? unit.conversion : 1;
-          return sum + (l.quantity * conv);
-        }
-        return sum;
-      }, 0);
-      const remainingStock = totalStock - usedInGrid;
+      // Subtract quantities already used by other rows (only when not batch — batch caps per line only)
+      let remainingStock = totalStock;
+      if (!selectedBatch) {
+        const usedInGrid = lines.reduce((sum, l) => {
+          if (l.productId === product._id && l.id !== lineId) {
+            const unit = l.availableUnits.find((u) => u.id === l.unitId);
+            const conv = (unit?.isMultiUnit && unit?.conversion) ? unit.conversion : 1;
+            return sum + (l.quantity * conv);
+          }
+          return sum;
+        }, 0);
+        remainingStock = totalStock - usedInGrid;
+      }
 
       // Block sale if no stock available
       if (remainingStock <= 0) {
@@ -882,6 +911,7 @@ export default function SalesB2C() {
             availableUnits,
             quantity: defaultQty,
             baseStockPieces: totalStock,
+            batchMaxPieces: selectedBatch ? selectedBatch.quantity : undefined,
             price: usePrice,
             purchasePrice: purchaseRate,
             gross: parseFloat((defaultQty * usePrice).toFixed(2)),
@@ -1033,17 +1063,21 @@ export default function SalesB2C() {
       setLines((prev) => {
         return prev.map((line) => {
           if (line.id !== lineId) return line;
-          // Calculate max qty for the new unit considering other rows
-          const usedByOtherRows = prev.reduce((sum, l) => {
-            if (l.id === lineId || l.productId !== line.productId) return sum;
-            const u = l.availableUnits.find((au) => au.id === l.unitId);
-            const conv = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
-            return sum + (l.quantity * conv);
-          }, 0);
-          const remainingPieces = line.baseStockPieces - usedByOtherRows;
           const conv = (selectedUnit.isMultiUnit && selectedUnit.conversion && selectedUnit.conversion > 0) ? selectedUnit.conversion : 1;
-          const maxQty = Math.max(remainingPieces / conv, 0);
-          const newQuantity = Math.min(1, parseFloat(maxQty.toFixed(4)));
+          let maxPieces: number;
+          if (line.batchMaxPieces != null && line.batchMaxPieces > 0) {
+            maxPieces = line.batchMaxPieces;
+          } else {
+            const usedByOtherRows = prev.reduce((sum, l) => {
+              if (l.id === lineId || l.productId !== line.productId) return sum;
+              const u = l.availableUnits.find((au) => au.id === l.unitId);
+              const c = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
+              return sum + (l.quantity * c);
+            }, 0);
+            maxPieces = line.baseStockPieces - usedByOtherRows;
+          }
+          const maxQty = Math.max(maxPieces / conv, 0);
+          const newQuantity = Math.min(line.quantity, parseFloat(maxQty.toFixed(4)));
 
           const updated = {
             ...line,
@@ -1163,27 +1197,48 @@ export default function SalesB2C() {
     }
   }, [revertUncommittedRow]);
 
-  // Handle Enter key on Item Name field - auto-select matching product or verify name
+  // Open batch dialog for a line that has a batched product (called only on Enter key in item field)
+  const openBatchDialogForLine = useCallback(async (line: LineItem) => {
+    if (!line.productId) return;
+    const product = products.find((p) => p._id === line.productId);
+    const isBatchedProduct = product?.allowBatches === true || (line.batchMaxPieces != null && line.batchMaxPieces > 0);
+    if (!product || !isBatchedProduct) return;
+    const batches = await getBatchesForProduct(product._id);
+    if (batches.length > 1) {
+      setAvailableBatches(batches);
+      setPendingProductSelection({ lineId: line.id, product });
+      setFocusedBatchIndex(0);
+      setBatchDialogOpen(true);
+    }
+  }, [products, getBatchesForProduct]);
+
+  // Handle Enter key on Item Name field - auto-select matching product or verify name; Enter on batched product opens batch dialog
   const handleItemNameKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
-      // Check if the Autocomplete dropdown is open — if so, let the Autocomplete handle the selection
-      const input = itemNameInputRefs.current[line.id];
-      if (input) {
-        const isDropdownOpen = input.getAttribute('aria-expanded') === 'true';
-        if (isDropdownOpen) {
-          // Dropdown is open — Autocomplete will handle the Enter key to select the highlighted option
-          // Just let it through, and after selection focus qty
-          setTimeout(() => {
-            qtyInputRefs.current[line.id]?.focus();
-            qtyInputRefs.current[line.id]?.select();
-          }, 150);
+      // If row already has a batched product, Enter always opens batch dialog (e.g. return to item field and press Enter)
+      if (line.productId) {
+        const product = products.find((p) => p._id === line.productId);
+        const isBatchedProduct = product?.allowBatches === true || (line.batchMaxPieces != null && line.batchMaxPieces > 0);
+        if (isBatchedProduct) {
+          e.preventDefault();
+          e.stopPropagation();
+          openBatchDialogForLine(line);
           return;
         }
       }
 
+      // Check if the Autocomplete dropdown is open — if so, let the Autocomplete handle the selection
+      const input = itemNameInputRefs.current[line.id];
+      if (input?.getAttribute('aria-expanded') === 'true') {
+        setTimeout(() => {
+          qtyInputRefs.current[line.id]?.focus();
+          qtyInputRefs.current[line.id]?.select();
+        }, 150);
+        return;
+      }
+
       // If item name is blank and no product selected
       if (!line.productId && !line.name.trim()) {
-        // Check if this is the last row — jump to Cash Received
         const currentIndex = lines.findIndex((l) => l.id === line.id);
         if (currentIndex === lines.length - 1) {
           e.preventDefault();
@@ -1208,11 +1263,10 @@ export default function SalesB2C() {
           return;
         }
       }
-      // If the row already has a product, check the typed name matches
+      // If the row already has a product
       if (line.productId) {
         const product = products.find((p) => p._id === line.productId);
         if (product && line.name !== product.name) {
-          // Name was changed — try to find the new typed name as a product
           const typed = line.name.trim().toLowerCase();
           const newMatch = products.find((p) => p.name.toLowerCase() === typed);
           if (newMatch) {
@@ -1226,31 +1280,37 @@ export default function SalesB2C() {
             });
             return;
           }
-          // No match found — revert to original
           updateLine(line.id, 'name', product.name);
         }
-        // Move focus to qty field
+        // Move focus to qty field (batched product case already handled at top)
         setTimeout(() => {
           qtyInputRefs.current[line.id]?.focus();
           qtyInputRefs.current[line.id]?.select();
         }, 50);
       }
     }
-  }, [products, updateLine, handleProductSelect, lines]);
+  }, [products, updateLine, handleProductSelect, lines, openBatchDialogForLine]);
 
-  // Handle Enter key on Qty field - focus on Price if qty > 0
-  const handleQtyKeyDown = useCallback((e: React.KeyboardEvent, lineId: string, qty: number) => {
+  // Handle Enter key on Qty field - focus on Price if qty > 0; if last row and any field blank, go to Cash Received
+  const handleQtyKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      if (qty > 0) {
-        const priceInput = priceInputRefs.current[lineId];
+      const currentIndex = lines.findIndex((l) => l.id === line.id);
+      const isLastRow = currentIndex === lines.length - 1;
+      const isBlank = !line.productCode || line.quantity <= 0 || line.price <= 0;
+      if (isLastRow && isBlank) {
+        setTimeout(() => cashReceivedRef.current?.focus(), 50);
+        return;
+      }
+      if (line.quantity > 0) {
+        const priceInput = priceInputRefs.current[line.id];
         if (priceInput) {
           priceInput.focus();
           priceInput.select();
         }
       }
     }
-  }, []);
+  }, [lines]);
 
   // Handle Enter key on Price field - commit row edit and move to next row
   const handlePriceKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
@@ -1259,6 +1319,14 @@ export default function SalesB2C() {
 
       // Validate current row: Item Code, Item Name, Qty > 0, Price > 0 must all be filled
       if (!line.productCode || !line.name || line.quantity <= 0 || line.price <= 0) {
+        const currentIndex = lines.findIndex((l) => l.id === line.id);
+        const isLastRow = currentIndex === lines.length - 1;
+        const isBlank = !line.productCode || line.quantity <= 0 || line.price <= 0;
+        // If last row and product code or qty or price is blank, go to Cash Received
+        if (isLastRow && isBlank) {
+          setTimeout(() => cashReceivedRef.current?.focus(), 50);
+          return;
+        }
         // Find which field is missing and focus it
         if (!line.productCode || !line.name) {
           setTimeout(() => itemNameInputRefs.current[line.id]?.focus(), 50);
@@ -1304,6 +1372,44 @@ export default function SalesB2C() {
       }, 100);
     }
   }, [lines, enterRow]);
+
+  // Handle QTY blur — if qty exceeds stock, show dialog and keep focus on QTY field
+  const handleQtyBlur = useCallback((line: LineItem) => {
+    const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'quantity' ? editingNumericCell.value : '';
+    const parsedQty = parseNumericInput(raw);
+    setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'quantity' ? null : prev);
+
+    if (!line.productId) {
+      updateLine(line.id, 'quantity', parsedQty);
+      return;
+    }
+
+    const currentUnit = line.availableUnits.find((u) => u.id === line.unitId);
+    const conv = (currentUnit?.isMultiUnit && currentUnit?.conversion) ? currentUnit.conversion : 1;
+    let maxQtyForThisRow = 0;
+    if (line.batchMaxPieces != null && line.batchMaxPieces > 0) {
+      maxQtyForThisRow = line.batchMaxPieces / conv;
+    } else if (line.baseStockPieces > 0) {
+      const usedByOtherRows = lines.reduce((sum, l) => {
+        if (l.id === line.id || l.productId !== line.productId) return sum;
+        const u = l.availableUnits.find((au) => au.id === l.unitId);
+        const c = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
+        return sum + (l.quantity * c);
+      }, 0);
+      const remainingPieces = line.baseStockPieces - usedByOtherRows;
+      maxQtyForThisRow = remainingPieces / conv;
+    }
+
+    const cappedQty = Math.max(parseFloat((maxQtyForThisRow || 0).toFixed(4)), 0);
+    if (maxQtyForThisRow > 0 && parsedQty > cappedQty) {
+      setStockAlertMessage('Qty not available');
+      setStockAlertOpen(true);
+      qtyOverflowLineIdRef.current = line.id;
+      updateLine(line.id, 'quantity', cappedQty);
+    } else {
+      updateLine(line.id, 'quantity', parsedQty);
+    }
+  }, [lines, editingNumericCell, updateLine]);
 
   const removeLine = (id: string) => {
     // Clear snapshot if the removed row was being edited
@@ -1704,6 +1810,7 @@ export default function SalesB2C() {
       rateType,
       paymentType,
       vatType,
+      taxMode,
       cashAccountId: cashAccountId || undefined,
       otherDiscount,
       otherCharges,
@@ -1766,6 +1873,7 @@ export default function SalesB2C() {
       rateType,
       paymentType,
       vatType,
+      taxMode,
       cashAccountId: cashAccountId || undefined,
       otherDiscount,
       otherCharges,
@@ -2110,8 +2218,8 @@ export default function SalesB2C() {
   };
 
   // Prevent non-numeric input in number fields
-  // Select all text when focusing on a text field
-  const handleTextFieldFocus = (e: React.FocusEvent<HTMLInputElement>) => {
+  // Select all text when focusing on a text field (MUI TextField can be input or textarea)
+  const handleTextFieldFocus = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement, Element>) => {
     e.target.select();
   };
 
@@ -2162,24 +2270,24 @@ export default function SalesB2C() {
     const input = e.target as HTMLInputElement;
     const value = input.value;
     const selStart = input.selectionStart ?? value.length;
-    const selEnd = input.selectionEnd ?? value.length;
-    // Allow decimal point only if not already present
-    if (e.key === '.') {
-      if (value.includes('.')) { e.preventDefault(); }
-      return;
+      const selEnd = input.selectionEnd ?? value.length;
+      // Allow decimal point only if not already present
+      if (e.key === '.') {
+        if (value.includes('.')) { e.preventDefault(); }
+        return;
     }
     // Block if not a number
-    if (!/^[0-9]$/.test(e.key)) {
-      e.preventDefault();
-      return;
-    }
-    // Restrict to 2 decimal places: if there's a decimal and already 2 digits after it, block further digits (unless text is selected)
-    const dotIndex = value.indexOf('.');
-    if (dotIndex !== -1 && selStart === selEnd) {
-      const decimals = value.substring(dotIndex + 1);
-      if (decimals.length >= 2 && selStart > dotIndex) {
+      if (!/^[0-9]$/.test(e.key)) {
         e.preventDefault();
+        return;
       }
+      const dotIndex = value.indexOf('.');
+      // Restrict to 2 decimal places: if there's a decimal and already 2 digits after it, block further digits (unless text is selected)
+      if (dotIndex !== -1 && selStart === selEnd) {
+        const decimals = value.substring(dotIndex + 1);
+        if (decimals.length >= 2 && selStart > dotIndex) {
+          e.preventDefault();
+        }
     }
   };
 
@@ -2381,6 +2489,16 @@ export default function SalesB2C() {
               label="Tax"
               value={taxMode}
               onChange={(e) => setTaxMode(e.target.value as 'inclusive' | 'exclusive')}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setTaxMode((prev) => (prev === 'inclusive' ? 'exclusive' : 'inclusive'));
+                } else if (e.key === 'Enter') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setTimeout(() => rateTypeRef.current?.focus(), 50);
+                }
+              }}
               InputLabelProps={{ shrink: true }}
               sx={{ minWidth: 130, height: 38, '& .MuiOutlinedInput-root': { borderRadius: 1.5, height: 38 } }}
             >
@@ -2442,7 +2560,7 @@ export default function SalesB2C() {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
-                      // Focus the IMEI field of the first active line in the grid
+                      e.stopPropagation();
                       const firstLine = lines[0];
                       if (firstLine && imeiInputRefs.current[firstLine.id]) {
                         imeiInputRefs.current[firstLine.id]?.focus();
@@ -2784,10 +2902,11 @@ export default function SalesB2C() {
                       size="small"
                       variant="outlined"
                       type="number"
-                      value={line.quantity || ''}
-                      onChange={(e) => updateLine(line.id, 'quantity', e.target.value === '' ? 0 : parseFloat(e.target.value) || 0)}
-                      onFocus={handleTextFieldFocus}
-                      onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, qtyInputRefs); handleNumberKeyDown(e); handleQtyKeyDown(e, line.id, line.quantity); }}
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'quantity' ? editingNumericCell.value : (line.quantity === 0 ? '' : String(line.quantity))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'quantity', value: line.quantity === 0 ? '' : String(line.quantity) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'quantity' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => handleQtyBlur(line)}
+                      onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, qtyInputRefs); handleNumberKeyDown(e); handleQtyKeyDown(e, line); }}
                       inputProps={{ min: 0, style: { textAlign: 'center', fontSize: '0.82rem' }, inputMode: 'decimal' }}
                       fullWidth
                       inputRef={(el) => { qtyInputRefs.current[line.id] = el; }}
@@ -2799,10 +2918,10 @@ export default function SalesB2C() {
                       size="small"
                       variant="outlined"
                       type="number"
-                      value={line.price || ''}
-                      onChange={(e) => updateLine(line.id, 'price', e.target.value === '' ? 0 : parseFloat(e.target.value) || 0)}
-                      onBlur={() => { if (line.price) updateLine(line.id, 'price', parseFloat(line.price.toFixed(2))); }}
-                      onFocus={handleTextFieldFocus}
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'price' ? editingNumericCell.value : (line.price === 0 ? '' : String(line.price))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'price', value: line.price === 0 ? '' : String(line.price) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'price' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'price' ? editingNumericCell.value : ''; const num = parseFloat(parseNumericInput(raw).toFixed(2)); updateLine(line.id, 'price', num); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'price' ? null : prev); }}
                       onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, priceInputRefs); handleNumberKeyDown(e); handlePriceKeyDown(e, line); }}
                       inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.82rem' }, inputMode: 'decimal' }}
                       fullWidth
@@ -2816,9 +2935,10 @@ export default function SalesB2C() {
                       size="small"
                       variant="outlined"
                       type="number"
-                      value={line.discPercent || ''}
-                      onChange={(e) => updateLine(line.id, 'discPercent', e.target.value === '' ? 0 : parseFloat(e.target.value) || 0)}
-                      onFocus={handleTextFieldFocus}
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discPercent' ? editingNumericCell.value : (line.discPercent === 0 ? '' : String(line.discPercent))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'discPercent', value: line.discPercent === 0 ? '' : String(line.discPercent) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'discPercent' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discPercent' ? editingNumericCell.value : ''; updateLine(line.id, 'discPercent', parseNumericInput(raw)); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'discPercent' ? null : prev); }}
                       onKeyDown={(e) => {
                         handleGridArrowNavigation(e, line.id, discPercentInputRefs);
                         handleNumberKeyDown(e);
@@ -2838,9 +2958,10 @@ export default function SalesB2C() {
                       size="small"
                       variant="outlined"
                       type="number"
-                      value={line.discAmount || ''}
-                      onChange={(e) => updateLine(line.id, 'discAmount', e.target.value === '' ? 0 : parseFloat(e.target.value) || 0)}
-                      onFocus={handleTextFieldFocus}
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discAmount' ? editingNumericCell.value : (line.discAmount === 0 ? '' : String(line.discAmount))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'discAmount', value: line.discAmount === 0 ? '' : String(line.discAmount) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'discAmount' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discAmount' ? editingNumericCell.value : ''; updateLine(line.id, 'discAmount', parseNumericInput(raw)); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'discAmount' ? null : prev); }}
                       onKeyDown={(e) => {
                         handleGridArrowNavigation(e, line.id, discAmountInputRefs);
                         handleNumberKeyDown(e);
@@ -2884,9 +3005,10 @@ export default function SalesB2C() {
                 <Grid item xs={6}>
                   <TextField
                     size="small" label="Cash Received" type="number"
-                    value={cashReceived || ''}
-                    onChange={(e) => setCashReceived(parseFloat(e.target.value) || 0)}
-                    onFocus={handleTextFieldFocus}
+                    value={editingNumericCell?.field === 'cashReceived' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (cashReceived === 0 ? '' : String(cashReceived))}
+                    onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'cashReceived', value: cashReceived === 0 ? '' : String(cashReceived) }); }}
+                    onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'cashReceived' ? { ...prev, value: e.target.value } : prev)}
+                    onBlur={() => { const raw = editingNumericCell?.field === 'cashReceived' ? editingNumericCell.value : ''; setCashReceived(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'cashReceived' ? null : prev); }}
                     onKeyDown={(e) => { handleNumberKeyDown(e); if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => cardPaymentRef.current?.focus(), 50); } }}
                     inputRef={cashReceivedRef}
                     inputProps={{ inputMode: 'decimal' }}
@@ -2900,9 +3022,10 @@ export default function SalesB2C() {
                 <Grid item xs={6}>
                   <TextField
                     size="small" label="Card Payment" type="number"
-                    value={cardAmount || ''}
-                    onChange={(e) => setCardAmount(parseFloat(e.target.value) || 0)}
-                    onFocus={handleTextFieldFocus}
+                    value={editingNumericCell?.field === 'cardAmount' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (cardAmount === 0 ? '' : String(cardAmount))}
+                    onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'cardAmount', value: cardAmount === 0 ? '' : String(cardAmount) }); }}
+                    onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'cardAmount' ? { ...prev, value: e.target.value } : prev)}
+                    onBlur={() => { const raw = editingNumericCell?.field === 'cardAmount' ? editingNumericCell.value : ''; setCardAmount(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'cardAmount' ? null : prev); }}
                     onKeyDown={(e) => { handleNumberKeyDown(e); if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => narrationRef.current?.focus(), 50); } }}
                     inputRef={cardPaymentRef}
                     inputProps={{ inputMode: 'decimal' }}
@@ -2981,22 +3104,22 @@ export default function SalesB2C() {
               </Typography>
               <Grid container spacing={1}>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Disc %" type="number" value={otherDiscPercent || ''} onChange={(e) => handleOtherDiscPercentChange(parseFloat(e.target.value) || 0)} onFocus={handleTextFieldFocus} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal', max: 100 }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Other Disc %" type="number" value={editingNumericCell?.field === 'otherDiscPercent' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscPercent === 0 ? '' : String(otherDiscPercent))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscPercent', value: otherDiscPercent === 0 ? '' : String(otherDiscPercent) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscPercent' ? editingNumericCell.value : ''; handleOtherDiscPercentChange(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal', max: 100 }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Discount" type="number" value={otherDiscount || ''} onChange={(e) => { setOtherDiscount(parseFloat(e.target.value) || 0); setOtherDiscPercent(0); }} onFocus={handleTextFieldFocus} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Other Discount" type="number" value={editingNumericCell?.field === 'otherDiscount' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscount === 0 ? '' : String(otherDiscount))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscount', value: otherDiscount === 0 ? '' : String(otherDiscount) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscount' ? editingNumericCell.value : ''; setOtherDiscount(parseNumericInput(raw)); setOtherDiscPercent(0); setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Charges" type="number" value={otherCharges || ''} onChange={(e) => setOtherCharges(parseFloat(e.target.value) || 0)} onFocus={handleTextFieldFocus} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Other Charges" type="number" value={editingNumericCell?.field === 'otherCharges' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Freight Charge" type="number" value={freightCharge || ''} onChange={(e) => setFreightCharge(parseFloat(e.target.value) || 0)} onFocus={handleTextFieldFocus} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Freight Charge" type="number" value={editingNumericCell?.field === 'freightCharge' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (freightCharge === 0 ? '' : String(freightCharge))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'freightCharge', value: freightCharge === 0 ? '' : String(freightCharge) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'freightCharge' ? editingNumericCell.value : ''; setFreightCharge(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Travel Charge" type="number" value={lendAddLess || ''} onChange={(e) => setLendAddLess(parseFloat(e.target.value) || 0)} onFocus={handleTextFieldFocus} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Travel Charge" type="number" value={editingNumericCell?.field === 'lendAddLess' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (lendAddLess === 0 ? '' : String(lendAddLess))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'lendAddLess', value: lendAddLess === 0 ? '' : String(lendAddLess) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'lendAddLess' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'lendAddLess' ? editingNumericCell.value : ''; setLendAddLess(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'lendAddLess' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Round Off" type="number" value={roundOff || ''} onChange={(e) => setRoundOff(parseFloat(e.target.value) || 0)} onFocus={handleTextFieldFocus} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Round Off" type="number" value={editingNumericCell?.field === 'roundOff' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'roundOff' ? null : prev); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
               </Grid>
             </Box>
@@ -3020,6 +3143,10 @@ export default function SalesB2C() {
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                   <Typography sx={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 500 }}>This Bill</Typography>
                   <Typography sx={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e293b' }}>{calculations.subTotal.toFixed(2)}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                  <Typography sx={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 500 }}>Total VAT</Typography>
+                  <Typography sx={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e293b' }}>{calculations.totalVat.toFixed(2)}</Typography>
                 </Box>
                 {[
                   { label: 'Old Balance', value: oldBalance },
@@ -3234,7 +3361,14 @@ export default function SalesB2C() {
       </Dialog>
 
       {/* Stock Alert Dialog */}
-      <Dialog open={stockAlertOpen} onClose={() => setStockAlertOpen(false)} disableRestoreFocus PaperProps={{ sx: { borderRadius: 2, minWidth: 360 } }}
+      <Dialog open={stockAlertOpen} onClose={() => {
+        setStockAlertOpen(false);
+        const lineId = qtyOverflowLineIdRef.current;
+        if (lineId) {
+          qtyOverflowLineIdRef.current = null;
+          setTimeout(() => qtyInputRefs.current[lineId]?.focus(), 50);
+        }
+      }} disableRestoreFocus PaperProps={{ sx: { borderRadius: 2, minWidth: 360 } }}
         TransitionProps={{ onEntered: (node) => { const btn = (node as HTMLElement).querySelector<HTMLButtonElement>('[data-confirm-btn]'); btn?.focus(); } }}>
         <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#dc2626', display: 'flex', alignItems: 'center', gap: 1 }}>
           <WarningIcon sx={{ fontSize: 22, color: '#f59e0b' }} />
@@ -3244,7 +3378,14 @@ export default function SalesB2C() {
           <Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>{stockAlertMessage}</Typography>
         </DialogContent>
         <DialogActions sx={{ px: 2, pb: 2 }}>
-          <Button variant="contained" data-confirm-btn onClick={() => setStockAlertOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' }, boxShadow: 'none' }}>
+          <Button variant="contained" data-confirm-btn onClick={() => {
+            setStockAlertOpen(false);
+            const lineId = qtyOverflowLineIdRef.current;
+            if (lineId) {
+              qtyOverflowLineIdRef.current = null;
+              setTimeout(() => qtyInputRefs.current[lineId]?.focus(), 50);
+            }
+          }} sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' }, boxShadow: 'none' }}>
             OK
           </Button>
         </DialogActions>

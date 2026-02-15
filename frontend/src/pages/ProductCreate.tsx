@@ -114,13 +114,13 @@ export default function ProductCreate() {
   const [editConfirmOpen, setEditConfirmOpen] = useState(false);
   const [editedDialogOpen, setEditedDialogOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  
+
   // Change Product Name Dialog
   const [changeNameDialogOpen, setChangeNameDialogOpen] = useState(false);
   const [changeNameCode, setChangeNameCode] = useState('');
   const [changeNameValue, setChangeNameValue] = useState('');
   const [changeNameSaving, setChangeNameSaving] = useState(false);
-  
+
   const [imageUploading, setImageUploading] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -148,10 +148,7 @@ export default function ProductCreate() {
     if (!companyId) return;
     productApi.getItemGroups(companyId).then((res) => setItemGroups((res.data.data as string[]) ?? []));
   }, [companyId]);
-  const refreshBrands = useCallback(() => {
-    if (!companyId) return;
-    productApi.getBrands(companyId).then((res) => setBrands((res.data.data as string[]) ?? [])).catch(() => setBrands([]));
-  }, [companyId]);
+
 
   useEffect(() => {
     if (!companyId) return;
@@ -580,7 +577,7 @@ export default function ProductCreate() {
     <Box>
       <Typography variant="h4" gutterBottom>Product Reg</Typography>
       <Paper sx={{ p: 3, maxWidth: 900 }}>
-          <Grid container spacing={2}>
+        <Grid container spacing={2}>
           <Grid item xs={12} sm={4}>
             <TextField fullWidth size="small" label="Prod Code" value={code} disabled InputLabelProps={labelShrink} helperText="Auto-generated" />
           </Grid>
@@ -644,9 +641,9 @@ export default function ProductCreate() {
                 size="small"
                 onClick={handleOpenChangeName}
                 disabled={!selectedProduct}
-                sx={{ 
-                  minWidth: 'auto', 
-                  px: 1, 
+                sx={{
+                  minWidth: 'auto',
+                  px: 1,
                   py: 1,
                   fontSize: '0.7rem',
                   whiteSpace: 'nowrap',
@@ -781,8 +778,8 @@ export default function ProductCreate() {
                 {imageError && <Typography variant="caption" color="error" display="block" sx={{ mt: 0.5 }}>{imageError}</Typography>}
               </Box>
             </Box>
-            </Grid>
-            </Grid>
+          </Grid>
+        </Grid>
 
         <Box sx={{ mt: 3, mb: 1, display: 'flex', alignItems: 'center', gap: 2 }}>
           <Typography variant="subtitle1">Multi Unit Section</Typography>
@@ -810,17 +807,17 @@ export default function ProductCreate() {
         )}
 
         <Box sx={{ mt: 3, display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
-          <Button 
-            variant="contained" 
-            onClick={handleSave} 
+          <Button
+            variant="contained"
+            onClick={handleSave}
             disabled={saving || (!!editingId && !editModeActive)}
             startIcon={<SaveIcon />}
             sx={{ bgcolor: '#1976d2', '&:hover': { bgcolor: '#1565c0' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
           >
             SAVE
           </Button>
-          <Button 
-            variant="contained" 
+          <Button
+            variant="contained"
             onClick={handleEditClick}
             disabled={!editingId || saving}
             startIcon={<EditIcon />}
@@ -828,8 +825,8 @@ export default function ProductCreate() {
           >
             EDIT
           </Button>
-          <Button 
-            variant="contained" 
+          <Button
+            variant="contained"
             onClick={handleDeleteClick}
             disabled={!editingId || saving}
             startIcon={<DeleteIcon />}
@@ -837,15 +834,15 @@ export default function ProductCreate() {
           >
             DELETE
           </Button>
-          <Button 
-            variant="contained" 
+          <Button
+            variant="contained"
             onClick={handleClear}
             startIcon={<ClearIcon />}
             sx={{ bgcolor: '#00bcd4', '&:hover': { bgcolor: '#00acc1' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
           >
             CLEAR
           </Button>
-          <Button 
+          <Button
             variant="contained"
             onClick={() => navigate('/master/products')}
             sx={{ bgcolor: '#607d8b', '&:hover': { bgcolor: '#546e7a' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
@@ -1021,8 +1018,8 @@ export default function ProductCreate() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setChangeNameDialogOpen(false)}>Cancel</Button>
-          <Button 
-            variant="contained" 
+          <Button
+            variant="contained"
             onClick={handleChangeNameSave}
             disabled={changeNameSaving || !changeNameValue.trim()}
             autoFocus

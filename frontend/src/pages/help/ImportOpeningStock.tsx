@@ -57,7 +57,7 @@ export default function ImportOpeningStock() {
   const [file, setFile] = useState<File | null>(null);
   const [rows, setRows] = useState<string[][]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
-  const [mapping, setMapping] = useState<Record<string, number>>({});
+  const [mapping, setMapping] = useState<Record<string, number | undefined>>({});
   const [preview, setPreview] = useState<Array<Record<string, string | number>>>([]);
   const [errors, setErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -113,7 +113,7 @@ export default function ImportOpeningStock() {
     setResult(null);
     try {
       const res = await openingStockApi.importProductsAndStock(companyId, financialYearId, {
-        mapping,
+        mapping: mapping as unknown as Record<string, number>,
         rows,
         headers,
       });

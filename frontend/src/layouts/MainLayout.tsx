@@ -30,13 +30,13 @@ import PeopleIcon from '@mui/icons-material/People';
 import LockIcon from '@mui/icons-material/Lock';
 import ShoppingCartIcon from '@mui/icons-material/ShoppingCart';
 import ReceiptIcon from '@mui/icons-material/Receipt';
+import AssignmentReturnIcon from '@mui/icons-material/AssignmentReturn';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import ListAltIcon from '@mui/icons-material/ListAlt';
 import BackupIcon from '@mui/icons-material/Backup';
 import RestoreIcon from '@mui/icons-material/Restore';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
 import PrintIcon from '@mui/icons-material/Print';
-import HelpIcon from '@mui/icons-material/Help';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import InfoIcon from '@mui/icons-material/Info';
@@ -233,6 +233,36 @@ export default function MainLayout() {
           </Box>
           <Box
             component="button"
+            onClick={() => navigate('/entry/sales-return')}
+            title="Sales Return"
+            sx={{
+              all: 'unset',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 0.4,
+              px: 0.5,
+              py: 0.2,
+              ml: 0.5,
+              borderRadius: 0.8,
+              fontSize: '0.65rem',
+              fontWeight: 600,
+              color: 'rgba(255,255,255,0.8)',
+              transition: 'all 0.2s',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              maxWidth: 22,
+              '&:hover': { maxWidth: 100, bgcolor: 'rgba(255,255,255,0.15)', color: '#fff', px: 0.8 },
+              '&:active': { bgcolor: 'rgba(255,255,255,0.25)' },
+              '& .btn-label': { opacity: 0, ml: 0, transition: 'opacity 0.2s, margin 0.2s' },
+              '&:hover .btn-label': { opacity: 1, ml: 0.3 },
+            }}
+          >
+            <AssignmentReturnIcon sx={{ fontSize: 16, flexShrink: 0 }} />
+            <span className="btn-label">Sales Return</span>
+          </Box>
+          <Box
+            component="button"
             onClick={() => navigate('/entry/purchase')}
             title="Purchase Entry"
             sx={{
@@ -387,9 +417,9 @@ export default function MainLayout() {
               ? sec.items.filter(canAccess)
               : sec.title === 'FILE'
                 ? [
-                    { label: 'Create Company', path: '/file/companies/create', icon: <BusinessIcon /> },
-                    ...sec.items.filter((i) => i.action === 'logout'),
-                  ]
+                  { label: 'Create Company', path: '/file/companies/create', icon: <BusinessIcon /> },
+                  ...sec.items.filter((i) => i.action === 'logout'),
+                ]
                 : [];
             if (items.length === 0) return null;
             return (

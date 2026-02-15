@@ -30,6 +30,7 @@ export interface ISalesInvoice extends Document {
   rateType: RateType;
   paymentType: PaymentType;
   vatType: VatType;
+  taxMode?: 'inclusive' | 'exclusive';
   cashAccountId?: mongoose.Types.ObjectId;
   grossAmount: number;
   discountAmount: number;
@@ -84,6 +85,7 @@ const SalesInvoiceSchema = new Schema<ISalesInvoice>(
     rateType: { type: String, enum: ['Retail', 'WSale', 'Special1', 'Special2'], default: 'Retail' },
     paymentType: { type: String, enum: ['Cash', 'Credit'], default: 'Cash' },
     vatType: { type: String, enum: ['Vat', 'NonVat'], default: 'Vat' },
+    taxMode: { type: String, enum: ['inclusive', 'exclusive'] },
     cashAccountId: { type: Schema.Types.ObjectId, ref: 'LedgerAccount' },
     grossAmount: { type: Number, default: 0 },
     discountAmount: { type: Number, default: 0 },

@@ -9,7 +9,6 @@ import {
   IconButton,
   Autocomplete,
   createFilterOptions,
-  RadioGroup,
   FormControlLabel,
   Radio,
   Table,
@@ -51,8 +50,8 @@ import {
 import { useSelector, useDispatch } from 'react-redux';
 import { useNavigate, useLocation } from 'react-router-dom';
 import type { RootState } from '../store';
-import { productApi, ledgerAccountApi, purchaseApi, stockApi } from '../services/api';
-import type { PurchaseListItem, PurchaseInvoiceData } from '../services/api';
+import { productApi, ledgerAccountApi, purchaseApi, stockApi, ledgerApi } from '../services/api';
+import type { PurchaseListItem } from '../services/api';
 import DateInput, { getCurrentDate } from '../components/DateInput';
 import { setDrawerOpen } from '../store/slices/appSlice';
 
@@ -256,7 +255,7 @@ export default function PurchaseEntry() {
   const [vatType, setVatType] = useState<'Vat' | 'NonVat'>('Vat');
   const [taxMode, setTaxMode] = useState<'inclusive' | 'exclusive'>('inclusive');
   const [paymentType, setPaymentType] = useState<'Cash' | 'Credit'>('Cash');
-  const [location, setLocation] = useState('MAIN BRANCH');
+
 
   // Navigation for supplier creation flow
   const navigate = useNavigate();
@@ -273,7 +272,6 @@ export default function PurchaseEntry() {
   // Cash Account
   const [cashAccountId, setCashAccountId] = useState<string | null>(null);
   const [cashAccounts, setCashAccounts] = useState<CashAccount[]>([]);
-  const [selectedCashAccount, setSelectedCashAccount] = useState<CashAccount | null>(null);
 
   // Combined Cash + Supplier list
   const [supplierCashOptions, setSupplierCashOptions] = useState<SupplierCashOption[]>([]);
@@ -317,7 +315,6 @@ export default function PurchaseEntry() {
   const [narration, setNarration] = useState('');
 
   // Dialogs
-  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [savedDialogOpen, setSavedDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [searchDialogOpen, setSearchDialogOpen] = useState(false);
@@ -338,9 +335,23 @@ export default function PurchaseEntry() {
   const [heldPurchases, setHeldPurchases] = useState<HeldPurchase[]>(loadHeldPurchases);
   const [holdListDialogOpen, setHoldListDialogOpen] = useState(false);
 
+  // Ledger details for current invoice (when viewing a saved purchase)
+  const [voucherId, setVoucherId] = useState<string | null>(null);
+  const [voucherNo, setVoucherNo] = useState<string | null>(null);
+  const [ledgerEntries, setLedgerEntries] = useState<Array<{ ledgerAccountCode: string; ledgerAccountName: string; debitAmount: number; creditAmount: number; narration?: string }>>([]);
+  const [ledgerEntriesLoading, setLedgerEntriesLoading] = useState(false);
+
+  // Numeric field editing: allow ".02" and trailing zeros while typing
+  const [editingNumericCell, setEditingNumericCell] = useState<{ lineId?: string; field: string; value: string } | null>(null);
+  const parseNumericInput = (raw: string): number => {
+    if (raw === '' || raw === '-') return 0;
+    const normalized = raw === '.' || (/^\.\d*$/.test(raw)) ? '0' + raw : raw;
+    return parseFloat(normalized) || 0;
+  };
+
   // State
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [, setError] = useState<string | null>(null);
   const [editConfirmOpen, setEditConfirmOpen] = useState(false);
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
   const [errorDialogMessage, setErrorDialogMessage] = useState('');
@@ -414,11 +425,18 @@ export default function PurchaseEntry() {
     const itemsGross = lines.reduce((sum, l) => sum + l.gross, 0);
     const itemsDiscount = lines.reduce((sum, l) => sum + l.discAmount, 0);
     const itemsVat = lines.reduce((sum, l) => sum + l.vatAmount, 0);
+    // When Vat: adjustments are inclusive — total VAT includes VAT in adjustments
+    const netAdjustments = otherCharges + freightCharge + roundOff - otherDiscount;
+    const vatFromAdjustments = vatType === 'Vat' && netAdjustments !== 0
+      ? parseFloat((netAdjustments * 5 / (100 + 5)).toFixed(2))
+      : 0;
+    const totalVat = itemsVat + vatFromAdjustments;
+    // Inclusive: line total = net; Exclusive: line total = net + vat
     const subTotal = lines.reduce((sum, l) => sum + l.total, 0);
     const grandTotal = subTotal - otherDiscount + otherCharges + freightCharge + roundOff;
     const totalItems = lines.reduce((sum, l) => sum + (l.quantity || 0), 0);
-    return { itemsGross, itemsDiscount, itemsVat, subTotal, grandTotal, totalItems };
-  }, [lines, otherDiscount, otherCharges, freightCharge, roundOff]);
+    return { itemsGross, itemsDiscount, itemsVat, vatFromAdjustments, totalVat, subTotal, grandTotal, totalItems };
+  }, [lines, otherDiscount, otherCharges, freightCharge, roundOff, vatType]);
 
   // Handle other discount percentage change
   const handleOtherDiscPercentChange = (percent: number) => {
@@ -427,6 +445,14 @@ export default function PurchaseEntry() {
     const discountAmount = (subTotal * percent) / 100;
     setOtherDiscount(parseFloat(discountAmount.toFixed(2)));
   };
+
+
+  // Focus Cash/Supplier AC when navigating back to this page
+  useEffect(() => {
+    if (routeLocation.pathname === '/entry/purchase') {
+      setTimeout(() => supplierAcRef.current?.focus(), 300);
+    }
+  }, [routeLocation.pathname]);
 
   // Detect return from Supplier Create page — reload suppliers and auto-select
   useEffect(() => {
@@ -457,7 +483,7 @@ export default function PurchaseEntry() {
     loadInvoiceList();
     loadNextInvoiceNo();
     // Focus Cash/Supplier AC on page load
-    setTimeout(() => supplierAcRef.current?.focus(), 500);
+    setTimeout(() => supplierAcRef.current?.focus(), 800);
   }, [companyId, financialYearId]);
 
   const loadSuppliers = async () => {
@@ -476,7 +502,6 @@ export default function PurchaseEntry() {
       if ((res.data.data as CashAccount[]).length > 0) {
         const defaultCash = (res.data.data as CashAccount[])[0];
         setCashAccountId(defaultCash._id);
-        setSelectedCashAccount(defaultCash);
       }
     } catch {
       // ignore
@@ -530,6 +555,9 @@ export default function PurchaseEntry() {
       setSupplierId(inv.supplierId || null);
       setSupplierName(inv.supplierName || '');
       setNarration(inv.narration || '');
+      setVoucherId(inv.voucherId || null);
+      setVoucherNo(inv.voucherNo || null);
+      setLedgerEntries([]);
       setIsSaved(true);
       setError(null);
       setSuccessMessage('');
@@ -594,6 +622,24 @@ export default function PurchaseEntry() {
       setLoading(false);
     }
   }, [invoiceList]);
+
+  // Fetch ledger entries when viewing an invoice that has a voucher
+  useEffect(() => {
+    if (!voucherId) {
+      setLedgerEntries([]);
+      return;
+    }
+    let cancelled = false;
+    setLedgerEntriesLoading(true);
+    ledgerApi.entriesByVoucher(voucherId).then((res) => {
+      if (!cancelled && res.data.success && Array.isArray(res.data.data)) setLedgerEntries(res.data.data);
+    }).catch(() => {
+      if (!cancelled) setLedgerEntries([]);
+    }).finally(() => {
+      if (!cancelled) setLedgerEntriesLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [voucherId]);
 
   // Navigation handlers
   const navFirst = useCallback(() => {
@@ -1163,9 +1209,7 @@ export default function PurchaseEntry() {
     [lines, enterRow]
   );
 
-  const addLine = () => {
-    setLines((prev) => [...prev, emptyLine()]);
-  };
+
 
   const handleUnitChange = useCallback(
     (lineId: string, unitId: string) => {
@@ -1246,7 +1290,7 @@ export default function PurchaseEntry() {
   }, []);
 
   // Select all text when focusing on a text field (matches SalesB2C behavior)
-  const handleTextFieldFocus = (e: React.FocusEvent<HTMLInputElement>) => {
+  const handleTextFieldFocus = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement, Element>) => {
     e.target.select();
   };
 
@@ -1393,6 +1437,9 @@ export default function PurchaseEntry() {
 
   const handleRestoreHeldPurchase = (held: HeldPurchase) => {
     setInvoiceId(null);
+    setVoucherId(null);
+    setVoucherNo(null);
+    setLedgerEntries([]);
     setIsSaved(false);
     setInvoiceNo(held.invoiceNo);
     setDate(held.date);
@@ -1427,6 +1474,10 @@ export default function PurchaseEntry() {
 
   const handleClear = async () => {
     setInvoiceId(null);
+    setVoucherId(null);
+    setVoucherNo(null);
+    setLedgerEntries([]);
+    setEditingNumericCell(null);
     setDate(getCurrentDate());
     setSupplierInvNo('');
     setVatType('Vat');
@@ -1618,7 +1669,7 @@ export default function PurchaseEntry() {
       })),
       summary: {
         totalGross: calculations.itemsGross,
-        totalVat: calculations.itemsVat,
+        totalVat: calculations.totalVat,
         grandTotal: calculations.grandTotal,
       },
     };
@@ -1635,6 +1686,7 @@ export default function PurchaseEntry() {
       supplierId: supplierId || undefined,
       supplierName: supplierName || undefined,
       vatType,
+      taxMode,
       narration,
       itemsDiscount: calculations.itemsDiscount,
       otherDiscount,
@@ -1688,6 +1740,16 @@ export default function PurchaseEntry() {
 
       // Refresh invoice list for navigation
       loadInvoiceList();
+      // Reload this invoice so voucherId/voucherNo and ledger details are available
+      if (res.data.data?.purchaseId) {
+        const invRes = await purchaseApi.getById(res.data.data.purchaseId);
+        if (invRes.data.success && invRes.data.data) {
+          const inv = invRes.data.data;
+          setVoucherId(inv.voucherId ?? null);
+          setVoucherNo(inv.voucherNo ?? null);
+          if (inv.voucherId) setLedgerEntries([]);
+        }
+      }
 
       setTimeout(() => setSuccessMessage(''), 3000);
     } catch (err: any) {
@@ -2222,12 +2284,10 @@ export default function PurchaseEntry() {
                       size="small"
                       variant="outlined"
                       type="number"
-                      value={line.quantity || ''}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        updateLine(line.id, 'quantity', val === '' ? 0 : (parseFloat(val) || 0));
-                      }}
-                      onFocus={handleTextFieldFocus}
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'quantity' ? editingNumericCell.value : (line.quantity === 0 ? '' : String(line.quantity))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'quantity', value: line.quantity === 0 ? '' : String(line.quantity) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'quantity' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'quantity' ? editingNumericCell.value : ''; updateLine(line.id, 'quantity', parseNumericInput(raw)); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'quantity' ? null : prev); }}
                       onKeyDown={(e) => { handleNumberKeyDown(e); handleQtyKeyDown(e, line.id); }}
                       inputProps={{ min: 0, style: { textAlign: 'center', fontSize: '0.875rem' } }}
                       fullWidth
@@ -2240,12 +2300,10 @@ export default function PurchaseEntry() {
                       size="small"
                       variant="outlined"
                       type="number"
-                      value={line.pRate || ''}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        updateLine(line.id, 'pRate', val === '' ? 0 : (parseFloat(val) || 0));
-                      }}
-                      onFocus={handleTextFieldFocus}
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'pRate' ? editingNumericCell.value : (line.pRate === 0 ? '' : String(line.pRate))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'pRate', value: line.pRate === 0 ? '' : String(line.pRate) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'pRate' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'pRate' ? editingNumericCell.value : ''; updateLine(line.id, 'pRate', parseNumericInput(raw)); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'pRate' ? null : prev); }}
                       onKeyDown={(e) => { handleNumberKeyDown(e); handlePriceKeyDown(e, line.id); }}
                       inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.875rem' } }}
                       fullWidth
@@ -2259,12 +2317,10 @@ export default function PurchaseEntry() {
                       size="small"
                       variant="outlined"
                       type="number"
-                      value={line.discPercent || ''}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        updateLine(line.id, 'discPercent', val === '' ? 0 : (parseFloat(val) || 0));
-                      }}
-                      onFocus={handleTextFieldFocus}
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discPercent' ? editingNumericCell.value : (line.discPercent === 0 ? '' : String(line.discPercent))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'discPercent', value: line.discPercent === 0 ? '' : String(line.discPercent) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'discPercent' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discPercent' ? editingNumericCell.value : ''; updateLine(line.id, 'discPercent', parseNumericInput(raw)); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'discPercent' ? null : prev); }}
                       onKeyDown={(e) => { handleNumberKeyDown(e); handleDiscPercentKeyDown(e, line.id); }}
                       inputProps={{ min: 0, max: 100, style: { textAlign: 'center', fontSize: '0.875rem' } }}
                       fullWidth
@@ -2277,12 +2333,10 @@ export default function PurchaseEntry() {
                       size="small"
                       variant="outlined"
                       type="number"
-                      value={line.discAmount || ''}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        updateLine(line.id, 'discAmount', val === '' ? 0 : (parseFloat(val) || 0));
-                      }}
-                      onFocus={handleTextFieldFocus}
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discAmount' ? editingNumericCell.value : (line.discAmount === 0 ? '' : String(line.discAmount))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'discAmount', value: line.discAmount === 0 ? '' : String(line.discAmount) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'discAmount' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discAmount' ? editingNumericCell.value : ''; updateLine(line.id, 'discAmount', parseNumericInput(raw)); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'discAmount' ? null : prev); }}
                       onKeyDown={(e) => { handleNumberKeyDown(e); handleDiscAmountKeyDown(e, line.id); }}
                       inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.875rem' } }}
                       fullWidth
@@ -2297,12 +2351,10 @@ export default function PurchaseEntry() {
                       size="small"
                       variant="outlined"
                       type="number"
-                      value={line.profitPercent || ''}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        updateLine(line.id, 'profitPercent', val === '' ? 0 : (parseFloat(val) || 0));
-                      }}
-                      onFocus={handleTextFieldFocus}
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'profitPercent' ? editingNumericCell.value : (line.profitPercent === 0 ? '' : String(line.profitPercent))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'profitPercent', value: line.profitPercent === 0 ? '' : String(line.profitPercent) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'profitPercent' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'profitPercent' ? editingNumericCell.value : ''; updateLine(line.id, 'profitPercent', parseNumericInput(raw)); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'profitPercent' ? null : prev); }}
                       onKeyDown={(e) => { handleNumberKeyDown(e); handleProfitPercentKeyDown(e, line.id); }}
                       inputProps={{ style: { textAlign: 'center', fontSize: '0.875rem', color: line.profitPercent >= 0 ? '#059669' : '#dc2626', fontWeight: 500 } }}
                       fullWidth
@@ -2315,12 +2367,10 @@ export default function PurchaseEntry() {
                       size="small"
                       variant="outlined"
                       type="number"
-                      value={line.retail || ''}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        updateLine(line.id, 'retail', val === '' ? 0 : (parseFloat(val) || 0));
-                      }}
-                      onFocus={handleTextFieldFocus}
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'retail' ? editingNumericCell.value : (line.retail === 0 ? '' : String(line.retail))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'retail', value: line.retail === 0 ? '' : String(line.retail) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'retail' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'retail' ? editingNumericCell.value : ''; updateLine(line.id, 'retail', parseNumericInput(raw)); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'retail' ? null : prev); }}
                       onKeyDown={(e) => { handleNumberKeyDown(e); handleRetailKeyDown(e, line.id); }}
                       inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.875rem' } }}
                       fullWidth
@@ -2333,12 +2383,10 @@ export default function PurchaseEntry() {
                       size="small"
                       variant="outlined"
                       type="number"
-                      value={line.wholesale || ''}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        updateLine(line.id, 'wholesale', val === '' ? 0 : (parseFloat(val) || 0));
-                      }}
-                      onFocus={handleTextFieldFocus}
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'wholesale' ? editingNumericCell.value : (line.wholesale === 0 ? '' : String(line.wholesale))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'wholesale', value: line.wholesale === 0 ? '' : String(line.wholesale) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'wholesale' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'wholesale' ? editingNumericCell.value : ''; updateLine(line.id, 'wholesale', parseNumericInput(raw)); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'wholesale' ? null : prev); }}
                       onKeyDown={(e) => { handleNumberKeyDown(e); handleWholesaleKeyDown(e, line.id); }}
                       inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.875rem' } }}
                       fullWidth
@@ -2409,9 +2457,13 @@ export default function PurchaseEntry() {
           <Paper elevation={0} sx={{ p: 1.5, bgcolor: 'white', borderRadius: 1, border: '2px solid #000000' }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1e293b', mb: 0.5 }}>Summary</Typography>
             <Grid container spacing={1}>
-              <Grid item xs={6}>
+              <Grid item xs={3}>
                 <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Gross Total</Typography>
                 <TextField size="small" value={calculations.itemsGross.toFixed(2)} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
+              </Grid>
+              <Grid item xs={3}>
+                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Total VAT</Typography>
+                <TextField size="small" value={calculations.totalVat.toFixed(2)} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
               </Grid>
               <Grid item xs={6}>
                 <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Total Items</Typography>
@@ -2422,8 +2474,10 @@ export default function PurchaseEntry() {
                 <TextField
                   size="small"
                   type="number"
-                  value={otherDiscPercent}
-                  onChange={(e) => handleOtherDiscPercentChange(parseFloat(e.target.value) || 0)}
+                  value={editingNumericCell?.field === 'otherDiscPercent' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscPercent === 0 ? '' : String(otherDiscPercent))}
+                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscPercent', value: otherDiscPercent === 0 ? '' : String(otherDiscPercent) }); }}
+                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? { ...prev, value: e.target.value } : prev)}
+                  onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscPercent' ? editingNumericCell.value : ''; handleOtherDiscPercentChange(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? null : prev); }}
                   inputRef={otherDiscPercentRef}
                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => otherDiscountRef.current?.focus(), 50); } }}
                   fullWidth
@@ -2435,8 +2489,10 @@ export default function PurchaseEntry() {
                 <TextField
                   size="small"
                   type="number"
-                  value={otherDiscount}
-                  onChange={(e) => setOtherDiscount(parseFloat(e.target.value) || 0)}
+                  value={editingNumericCell?.field === 'otherDiscount' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscount === 0 ? '' : String(otherDiscount))}
+                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscount', value: otherDiscount === 0 ? '' : String(otherDiscount) }); }}
+                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? { ...prev, value: e.target.value } : prev)}
+                  onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscount' ? editingNumericCell.value : ''; setOtherDiscount(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? null : prev); }}
                   inputRef={otherDiscountRef}
                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => otherChargesRef.current?.focus(), 50); } }}
                   fullWidth
@@ -2448,8 +2504,10 @@ export default function PurchaseEntry() {
                 <TextField
                   size="small"
                   type="number"
-                  value={otherCharges}
-                  onChange={(e) => setOtherCharges(parseFloat(e.target.value) || 0)}
+                  value={editingNumericCell?.field === 'otherCharges' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))}
+                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) }); }}
+                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)}
+                  onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? null : prev); }}
                   inputRef={otherChargesRef}
                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => freightRef.current?.focus(), 50); } }}
                   fullWidth
@@ -2461,8 +2519,10 @@ export default function PurchaseEntry() {
                 <TextField
                   size="small"
                   type="number"
-                  value={freightCharge}
-                  onChange={(e) => setFreightCharge(parseFloat(e.target.value) || 0)}
+                  value={editingNumericCell?.field === 'freightCharge' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (freightCharge === 0 ? '' : String(freightCharge))}
+                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'freightCharge', value: freightCharge === 0 ? '' : String(freightCharge) }); }}
+                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? { ...prev, value: e.target.value } : prev)}
+                  onBlur={() => { const raw = editingNumericCell?.field === 'freightCharge' ? editingNumericCell.value : ''; setFreightCharge(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? null : prev); }}
                   inputRef={freightRef}
                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => roundOffRef.current?.focus(), 50); } }}
                   fullWidth
@@ -2474,8 +2534,10 @@ export default function PurchaseEntry() {
                 <TextField
                   size="small"
                   type="number"
-                  value={roundOff}
-                  onChange={(e) => setRoundOff(parseFloat(e.target.value) || 0)}
+                  value={editingNumericCell?.field === 'roundOff' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))}
+                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) }); }}
+                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev)}
+                  onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'roundOff' ? null : prev); }}
                   inputRef={roundOffRef}
                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => saveButtonRef.current?.focus(), 50); } }}
                   fullWidth
@@ -2518,6 +2580,48 @@ export default function PurchaseEntry() {
           Search
         </Button>
       </Paper>
+
+      {/* Ledger details for current invoice */}
+      {invoiceId && (
+        <Paper elevation={0} sx={{ p: 1.5, mt: 0.5, bgcolor: 'white', borderRadius: 1, border: '2px solid #000000' }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1e293b', mb: 1 }}>Ledger details</Typography>
+          {voucherNo ? (
+            <>
+              <Typography variant="body2" sx={{ color: '#475569', mb: 1 }}>Voucher: {voucherNo}</Typography>
+              {ledgerEntriesLoading ? (
+                <Typography variant="body2" color="text.secondary">Loading…</Typography>
+              ) : ledgerEntries.length > 0 ? (
+                <TableContainer>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Account (Code)</TableCell>
+                        <TableCell>Particulars</TableCell>
+                        <TableCell align="right">Debit</TableCell>
+                        <TableCell align="right">Credit</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {ledgerEntries.map((row, i) => (
+                        <TableRow key={i}>
+                          <TableCell>{row.ledgerAccountCode} – {row.ledgerAccountName}</TableCell>
+                          <TableCell sx={{ maxWidth: 240 }}>{row.narration || '–'}</TableCell>
+                          <TableCell align="right">{row.debitAmount > 0 ? row.debitAmount.toFixed(2) : ''}</TableCell>
+                          <TableCell align="right">{row.creditAmount > 0 ? row.creditAmount.toFixed(2) : ''}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              ) : (
+                <Typography variant="body2" color="text.secondary">No ledger entries found for this voucher.</Typography>
+              )}
+            </>
+          ) : (
+            <Typography variant="body2" color="text.secondary">Not posted to ledger. Use Edit then Update to post this invoice to the ledger.</Typography>
+          )}
+        </Paper>
+      )}
 
       {/* Dialogs with Modern Styling */}
       <Dialog open={savedDialogOpen} onClose={() => setSavedDialogOpen(false)} PaperProps={{ sx: { borderRadius: 3, p: 1, minWidth: 400 } }}>

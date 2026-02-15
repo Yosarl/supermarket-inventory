@@ -11,7 +11,6 @@ import {
   MenuItem,
   FormControlLabel,
   Checkbox,
-  InputAdornment,
   Autocomplete,
   Dialog,
   DialogTitle,
@@ -140,7 +139,7 @@ export default function LedgerRegForm({
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
   const [errorDialogMessage, setErrorDialogMessage] = useState('');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  
+
   // Change Led Name Dialog
   const [changeNameDialogOpen, setChangeNameDialogOpen] = useState(false);
   const [changeNameCode, setChangeNameCode] = useState('');
@@ -149,8 +148,8 @@ export default function LedgerRegForm({
   const underDisabled = ledgerType === 'Customer' || ledgerType === 'Supplier';
   const defaultGroupId =
     ledgerType === 'Customer' ? receivablesId
-    : ledgerType === 'Supplier' ? payablesId
-    : '';
+      : ledgerType === 'Supplier' ? payablesId
+        : '';
 
   const { register, handleSubmit, formState: { errors }, reset, setValue, watch, control } = useForm<FormData>({
     defaultValues: defaultFormValues,
@@ -207,8 +206,8 @@ export default function LedgerRegForm({
       const gid = (ledger.groupId as { _id?: string })?._id ?? ledger.groupId;
       const ob = Array.isArray(ledger.openingBalances) && financialYearId
         ? (ledger.openingBalances as Array<{ financialYearId: string; amount: number; isDebit: boolean }>).find(
-            (b) => String(b.financialYearId) === financialYearId
-          )
+          (b) => String(b.financialYearId) === financialYearId
+        )
         : null;
       setValue('name', String(ledger.name ?? ''));
       setValue('aliasName', String(ledger.aliasName ?? ''));
@@ -582,9 +581,9 @@ export default function LedgerRegForm({
                       size="small"
                       onClick={handleOpenChangeName}
                       disabled={!selectedId}
-                      sx={{ 
-                        minWidth: 'auto', 
-                        px: 1, 
+                      sx={{
+                        minWidth: 'auto',
+                        px: 1,
                         py: 0.9,
                         fontSize: '0.7rem',
                         whiteSpace: 'nowrap',
@@ -731,38 +730,38 @@ export default function LedgerRegForm({
           </Grid>
 
           <Box sx={{ mt: 3, display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
-            <Button 
-              type="submit" 
-              variant="contained" 
+            <Button
+              type="submit"
+              variant="contained"
               disabled={isEditMode}
               startIcon={<SaveIcon />}
               sx={{ bgcolor: '#1976d2', '&:hover': { bgcolor: '#1565c0' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
             >
               SAVE
             </Button>
-            <Button 
-              type="button" 
-              variant="contained" 
+            <Button
+              type="button"
+              variant="contained"
               onClick={clearForm}
               startIcon={<ClearIcon />}
               sx={{ bgcolor: '#00bcd4', '&:hover': { bgcolor: '#00acc1' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
             >
               CLEAR
             </Button>
-            <Button 
-              type="button" 
-              variant="contained" 
-              disabled={!isEditMode} 
+            <Button
+              type="button"
+              variant="contained"
+              disabled={!isEditMode}
               onClick={() => handleSubmit(onEdit)()}
               startIcon={<EditIcon />}
               sx={{ bgcolor: '#607d8b', '&:hover': { bgcolor: '#546e7a' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
             >
               EDIT
             </Button>
-            <Button 
-              type="button" 
-              variant="contained" 
-              disabled={!isEditMode} 
+            <Button
+              type="button"
+              variant="contained"
+              disabled={!isEditMode}
               onClick={onDelete}
               startIcon={<DeleteIcon />}
               sx={{ bgcolor: '#f44336', '&:hover': { bgcolor: '#d32f2f' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
@@ -801,8 +800,8 @@ export default function LedgerRegForm({
             {successDialog === 'saved'
               ? 'Ledger has been saved successfully.'
               : successDialog === 'edited'
-              ? 'Ledger has been updated successfully.'
-              : 'Ledger has been deleted successfully.'}
+                ? 'Ledger has been updated successfully.'
+                : 'Ledger has been deleted successfully.'}
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -838,8 +837,8 @@ export default function LedgerRegForm({
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setChangeNameDialogOpen(false)}>Cancel</Button>
-          <Button 
-            variant="contained" 
+          <Button
+            variant="contained"
             onClick={handleChangeNameSave}
             disabled={changeNameSaving || !changeNameValue.trim()}
             autoFocus

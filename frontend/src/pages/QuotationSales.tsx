@@ -15,7 +15,7 @@ import {
 } from '@mui/icons-material';
 import { useSelector, useDispatch } from 'react-redux';
 import type { RootState } from '../store';
-import { quotationApi, productApi, ledgerAccountApi, stockApi, salesApi } from '../services/api';
+import { quotationApi, productApi, ledgerAccountApi, stockApi, salesApi, purchaseApi } from '../services/api';
 import DateInput, { getCurrentDate } from '../components/DateInput';
 import { setDrawerOpen } from '../store/slices/appSlice';
 
@@ -34,6 +34,8 @@ interface LineItem {
   discPercent: number; discAmount: number; vatAmount: number; total: number;
   /** Total available stock for this product in BASE UNIT pieces */
   baseStockPieces: number;
+  /** When set, user can only enter up to this many pieces (selected batch qty) */
+  batchMaxPieces?: number;
 }
 
 interface MultiUnit {
@@ -108,6 +110,14 @@ export default function QuotationSales() {
   const [roundOff, setRoundOff] = useState(0);
   const [narration, setNarration] = useState('');
 
+  // Numeric field editing: allow ".02" and trailing zeros while typing
+  const [editingNumericCell, setEditingNumericCell] = useState<{ lineId?: string; field: string; value: string } | null>(null);
+  const parseNumericInput = (raw: string): number => {
+    if (raw === '' || raw === '-') return 0;
+    const normalized = raw === '.' || (/^\.\d*$/.test(raw)) ? '0' + raw : raw;
+    return parseFloat(normalized) || 0;
+  };
+
   const [isSaved, setIsSaved] = useState(false);
   const [loading, setLoading] = useState(false);
   const [invoiceIds, setInvoiceIds] = useState<string[]>([]);
@@ -121,6 +131,33 @@ export default function QuotationSales() {
   const [activeMultiUnitInfo, setActiveMultiUnitInfo] = useState<{
     pcsInside?: number; wholesale?: number; retail?: number; specialPrice1?: number; specialPrice2?: number;
   } | null>(null);
+
+  // Batch selection (for products with allowBatches and multiple batches)
+  const batchRowRefs = useRef<{ [key: number]: HTMLTableRowElement | null }>({});
+  const [batchDialogOpen, setBatchDialogOpen] = useState(false);
+  const [focusedBatchIndex, setFocusedBatchIndex] = useState(0);
+  const [availableBatches, setAvailableBatches] = useState<{
+    batchNumber: string;
+    productId: string;
+    productName: string;
+    purchasePrice: number;
+    expiryDate: string;
+    quantity: number;
+    retail: number;
+    wholesale: number;
+  }[]>([]);
+  const [pendingProductSelection, setPendingProductSelection] = useState<{
+    lineId: string;
+    product: Product;
+    matchedMultiUnitId?: string;
+    searchedImei?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (batchDialogOpen && batchRowRefs.current[focusedBatchIndex]) {
+      batchRowRefs.current[focusedBatchIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [batchDialogOpen, focusedBatchIndex]);
 
   /* ──── Dialogs ──── */
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
@@ -163,6 +200,9 @@ export default function QuotationSales() {
   const rowSnapshotRef = useRef<{ lineId: string; data: LineItem } | null>(null);
   const rowCommittedRef = useRef(false);
   const txnHistoryRowRefs = useRef<{ [key: number]: HTMLTableRowElement | null }>({});
+
+  // When QTY exceeds stock, store lineId to refocus after dialog closes
+  const qtyOverflowLineIdRef = useRef<string | null>(null);
 
   // Cache check for stock so we don't spam API
   const stockCacheRef = useRef<Map<string, { stock: number; ts: number }>>(new Map());
@@ -220,11 +260,17 @@ export default function QuotationSales() {
     const itemsGross = lines.reduce((sum, l) => sum + l.gross, 0);
     const itemsDiscount = lines.reduce((sum, l) => sum + l.discAmount, 0);
     const itemsVat = lines.reduce((sum, l) => sum + l.vatAmount, 0);
+    // When Vat: adjustments (other disc, other charges, freight, round off) are inclusive of tax — extract VAT
+    const netAdjustments = otherCharges + freightCharge + roundOff - otherDiscount;
+    const vatFromAdjustments = vatType === 'Vat' && netAdjustments !== 0
+      ? parseFloat((netAdjustments * VAT_RATE / (100 + VAT_RATE)).toFixed(2))
+      : 0;
+    const totalVat = itemsVat + vatFromAdjustments;
     const subTotal = lines.reduce((sum, l) => sum + l.total, 0);
     const grandTotal = subTotal - otherDiscount + otherCharges + freightCharge + roundOff;
     const totalItems = lines.reduce((sum, l) => sum + (l.quantity || 0), 0);
-    return { itemsGross, itemsDiscount, itemsVat, subTotal, grandTotal, totalItems };
-  }, [lines, otherDiscount, otherCharges, freightCharge, roundOff]);
+    return { itemsGross, itemsDiscount, itemsVat, vatFromAdjustments, totalVat, subTotal, grandTotal, totalItems };
+  }, [lines, otherDiscount, otherCharges, freightCharge, roundOff, vatType]);
 
   const handleOtherDiscPercentChange = (percent: number) => {
     setOtherDiscPercent(percent);
@@ -249,12 +295,15 @@ export default function QuotationSales() {
     loadProducts();
     loadCustomers();
     loadInvoiceIds();
+    // Focus Cash/Customer A/C when page is ready (company & FY selected)
+    const focusTimer = setTimeout(() => customerAcRef.current?.focus(), 400);
+    return () => clearTimeout(focusTimer);
   }, [companyId, financialYearId]);
 
-  // Focus customer AC on page open
+  // Focus customer AC when navigating to this page
   useEffect(() => {
     if (routeLocation.pathname === '/entry/quotation-sales') {
-      setTimeout(() => customerAcRef.current?.focus(), 200);
+      setTimeout(() => customerAcRef.current?.focus(), 300);
     }
   }, [routeLocation.pathname]);
 
@@ -307,21 +356,24 @@ export default function QuotationSales() {
           if (line.id !== id) return line;
           const updated = { ...line, [field]: value };
 
-          // Cap quantity to available stock (dynamic — considers ALL other rows for same product)
-          if (field === 'quantity' && updated.baseStockPieces > 0 && updated.productId) {
-            // Sum stock used by OTHER rows for the same product (in base pieces)
-            const usedByOtherRows = prev.reduce((sum, l) => {
-              if (l.id === id || l.productId !== updated.productId) return sum;
-              const u = l.availableUnits.find((au) => au.id === l.unitId);
-              const conv = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
-              return sum + (l.quantity * conv);
-            }, 0);
-            const remainingPieces = updated.baseStockPieces - usedByOtherRows;
-            // Convert remaining pieces to current unit's max qty
+          // Cap quantity to available stock (or to batch max when a batch was selected)
+          if (field === 'quantity' && updated.productId) {
             const currentUnit = updated.availableUnits.find((u) => u.id === updated.unitId);
             const conv = (currentUnit?.isMultiUnit && currentUnit?.conversion) ? currentUnit.conversion : 1;
-            const maxQtyForThisRow = remainingPieces / conv;
-            if (updated.quantity > maxQtyForThisRow) {
+            let maxQtyForThisRow = 0;
+            if (updated.batchMaxPieces != null && updated.batchMaxPieces > 0) {
+              maxQtyForThisRow = updated.batchMaxPieces / conv;
+            } else if (updated.baseStockPieces > 0) {
+              const usedByOtherRows = prev.reduce((sum, l) => {
+                if (l.id === id || l.productId !== updated.productId) return sum;
+                const u = l.availableUnits.find((au) => au.id === l.unitId);
+                const c = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
+                return sum + (l.quantity * c);
+              }, 0);
+              const remainingPieces = updated.baseStockPieces - usedByOtherRows;
+              maxQtyForThisRow = remainingPieces / conv;
+            }
+            if (maxQtyForThisRow > 0 && updated.quantity > maxQtyForThisRow) {
               updated.quantity = Math.max(parseFloat(maxQtyForThisRow.toFixed(4)), 0);
             }
           }
@@ -363,27 +415,32 @@ export default function QuotationSales() {
     setActiveLineId(null);
   }, []);
 
-  const handleProductSelect = useCallback(
-    async (lineId: string, product: Product | null, matchedMultiUnitId?: string, searchedImei?: string) => {
-      if (!product) {
-        updateLine(lineId, 'productId', '');
-        updateLine(lineId, 'productCode', '');
-        updateLine(lineId, 'name', '');
-        updateLine(lineId, 'price', 0);
-        setSelectedProductInfo(null);
-        setActiveLineId(null);
-        return;
-      }
+  const getBatchesForProduct = useCallback(async (productId: string) => {
+    try {
+      if (!companyId) return [];
+      const res = await purchaseApi.getProductBatches(companyId, productId);
+      return res.data.data || [];
+    } catch {
+      return [];
+    }
+  }, [companyId]);
 
-      // Pick price based on rate type
+  type BatchOption = typeof availableBatches[0];
+
+  const completeProductSelection = useCallback(
+    async (lineId: string, product: Product, selectedBatch?: BatchOption | null, matchedMultiUnitId?: string, searchedImei?: string) => {
       let mainPrice = 0;
-      if (rateType === 'WSale') mainPrice = product.wholesalePrice ?? product.retailPrice ?? 0;
-      else if (rateType === 'Special1') mainPrice = (product as any).specialPrice ?? product.retailPrice ?? 0;
-      else if (rateType === 'Special2') mainPrice = (product as any).specialPrice2 ?? product.retailPrice ?? 0;
-      else mainPrice = product.retailPrice ?? 0;
+      if (rateType === 'WSale') {
+        mainPrice = selectedBatch?.wholesale ?? product.wholesalePrice ?? product.retailPrice ?? 0;
+      } else if (rateType === 'Special1') {
+        mainPrice = (product as any).specialPrice ?? product.retailPrice ?? 0;
+      } else if (rateType === 'Special2') {
+        mainPrice = (product as any).specialPrice2 ?? product.retailPrice ?? 0;
+      } else {
+        mainPrice = selectedBatch?.retail ?? product.retailPrice ?? 0;
+      }
       mainPrice = parseFloat(mainPrice.toFixed(2));
-
-      const purchaseRate = product.purchasePrice ?? 0;
+      const purchaseRate = selectedBatch?.purchasePrice ?? product.purchasePrice ?? 0;
 
       // Build available units
       const availableUnits: UnitOption[] = [];
@@ -410,7 +467,6 @@ export default function QuotationSales() {
         });
       }
 
-      // Determine which unit to use (IMEI/multi-unit match logic from SalesB2C)
       let selectedUnit: UnitOption | null = null;
       if (matchedMultiUnitId) {
         selectedUnit = availableUnits.find((u) => u.multiUnitId === matchedMultiUnitId) || null;
@@ -434,44 +490,45 @@ export default function QuotationSales() {
       }
       const usePrice = parseFloat((selectedUnit?.price ?? mainPrice).toFixed(2));
 
-      // Multi-unit info
-      const selUnit = selectedUnit;
-      if (selUnit?.isMultiUnit) {
-        setActiveMultiUnitInfo({ pcsInside: selUnit.conversion, wholesale: selUnit.wholesale, retail: selUnit.retail, specialPrice1: selUnit.specialPrice1, specialPrice2: selUnit.specialPrice2 });
+      if (selectedUnit?.isMultiUnit) {
+        setActiveMultiUnitInfo({ pcsInside: selectedUnit.conversion, wholesale: selectedUnit.wholesale, retail: selectedUnit.retail, specialPrice1: selectedUnit.specialPrice1, specialPrice2: selectedUnit.specialPrice2 });
       } else {
         setActiveMultiUnitInfo(null);
       }
 
-      // Fetch actual net stock from backend (purchases - sales)
       let totalStock = 0;
-      try {
-        if (companyId) {
-          const stockRes = await stockApi.getProductStock(companyId, product._id);
-          totalStock = stockRes.data.data?.stock ?? 0;
+      if (selectedBatch) {
+        totalStock = selectedBatch.quantity;
+      } else {
+        try {
+          if (companyId) {
+            const stockRes = await stockApi.getProductStock(companyId, product._id);
+            totalStock = stockRes.data.data?.stock ?? 0;
+          }
+        } catch {
+          totalStock = (product as any).stock ?? 0;
         }
-      } catch {
-        totalStock = (product as any).stock ?? 0;
       }
 
-      // Subtract quantities already used by other rows in this invoice for the same product
-      const usedInGrid = lines.reduce((sum, l) => {
-        if (l.productId === product._id && l.id !== lineId) {
-          const unit = l.availableUnits.find((u) => u.id === l.unitId);
-          const conv = (unit?.isMultiUnit && unit?.conversion) ? unit.conversion : 1;
-          return sum + (l.quantity * conv);
-        }
-        return sum;
-      }, 0);
-      const remainingStock = totalStock - usedInGrid;
+      let remainingStock = totalStock;
+      if (!selectedBatch) {
+        const usedInGrid = lines.reduce((sum, l) => {
+          if (l.productId === product._id && l.id !== lineId) {
+            const unit = l.availableUnits.find((u) => u.id === l.unitId);
+            const conv = (unit?.isMultiUnit && unit?.conversion) ? unit.conversion : 1;
+            return sum + (l.quantity * conv);
+          }
+          return sum;
+        }, 0);
+        remainingStock = totalStock - usedInGrid;
+      }
 
-      // Block if no stock available
       if (remainingStock <= 0) {
         setStockAlertMessage(`Cannot add "${product.name}" — no stock available.`);
         setStockAlertOpen(true);
         return;
       }
 
-      // Block if selected unit has 0 max qty
       const effectiveMaxQty = (selectedUnit?.isMultiUnit && selectedUnit?.conversion && selectedUnit.conversion > 0)
         ? remainingStock / selectedUnit.conversion
         : remainingStock;
@@ -481,19 +538,19 @@ export default function QuotationSales() {
         return;
       }
 
-      // Default quantity capped to available stock
       const defaultQty = Math.min(1, parseFloat(effectiveMaxQty.toFixed(4)));
 
       setSelectedProductInfo({
         profit: usePrice - purchaseRate, purchaseRate,
-        retailPrice: product.retailPrice ?? 0, wholesalePrice: product.wholesalePrice ?? 0,
+        retailPrice: selectedBatch?.retail ?? product.retailPrice ?? 0,
+        wholesalePrice: selectedBatch?.wholesale ?? product.wholesalePrice ?? 0,
         stock: remainingStock, totalStock,
         lastVendor: (product as any).lastVendor ?? '-',
-        batchNumber: (product as any).batchNumber ?? '', expiryDate: (product as any).expiryDate ?? '',
+        batchNumber: selectedBatch?.batchNumber ?? (product as any).batchNumber ?? '',
+        expiryDate: selectedBatch?.expiryDate ?? (product as any).expiryDate ?? '',
       });
       setActiveLineId(lineId);
 
-      // Product selection is a fresh fill — auto-commit so it won't be reverted
       rowCommittedRef.current = true;
       rowSnapshotRef.current = null;
 
@@ -511,6 +568,7 @@ export default function QuotationSales() {
             availableUnits,
             quantity: defaultQty,
             baseStockPieces: totalStock,
+            batchMaxPieces: selectedBatch ? selectedBatch.quantity : undefined,
             price: usePrice,
             purchasePrice: purchaseRate,
             gross: parseFloat((defaultQty * usePrice).toFixed(2)),
@@ -525,8 +583,108 @@ export default function QuotationSales() {
 
       setTimeout(() => { qtyInputRefs.current[lineId]?.focus(); }, 100);
     },
-    [rateType, vatType, updateLine, calcVatAndTotal, companyId, lines]
+    [rateType, vatType, calcVatAndTotal, companyId, lines]
   );
+
+  const handleProductSelect = useCallback(
+    async (lineId: string, product: Product | null, matchedMultiUnitId?: string, searchedImei?: string) => {
+      if (!product) {
+        updateLine(lineId, 'productId', '');
+        updateLine(lineId, 'productCode', '');
+        updateLine(lineId, 'name', '');
+        updateLine(lineId, 'price', 0);
+        setSelectedProductInfo(null);
+        setActiveLineId(null);
+        return;
+      }
+
+      const batches = await getBatchesForProduct(product._id);
+
+      if (product.allowBatches === false) {
+        if (batches.length > 0) {
+          const nonZeroBatches = batches.filter((b) => b.quantity > 0);
+          const avgPurchasePrice = nonZeroBatches.length > 0
+            ? nonZeroBatches.reduce((sum, b) => sum + b.purchasePrice, 0) / nonZeroBatches.length
+            : batches[0].purchasePrice;
+          const totalQty = nonZeroBatches.reduce((sum, b) => sum + b.quantity, 0) || batches.reduce((sum, b) => sum + b.quantity, 0);
+          const avgRetail = nonZeroBatches.length > 0
+            ? nonZeroBatches.reduce((sum, b) => sum + b.retail, 0) / nonZeroBatches.length
+            : batches[0].retail;
+          const avgWholesale = nonZeroBatches.length > 0
+            ? nonZeroBatches.reduce((sum, b) => sum + b.wholesale, 0) / nonZeroBatches.length
+            : batches[0].wholesale;
+          const mergedBatch: BatchOption = {
+            batchNumber: 'MERGED',
+            productId: product._id,
+            productName: product.name,
+            purchasePrice: avgPurchasePrice,
+            expiryDate: '',
+            quantity: totalQty,
+            retail: avgRetail,
+            wholesale: avgWholesale,
+          };
+          await completeProductSelection(lineId, product, mergedBatch, matchedMultiUnitId, searchedImei);
+        } else {
+          await completeProductSelection(lineId, product, undefined, matchedMultiUnitId, searchedImei);
+        }
+        return;
+      }
+
+      if (batches.length > 1) {
+        setAvailableBatches(batches);
+        setPendingProductSelection({ lineId, product, matchedMultiUnitId, searchedImei });
+        setFocusedBatchIndex(0);
+        setBatchDialogOpen(true);
+        return;
+      }
+
+      if (batches.length === 1) {
+        await completeProductSelection(lineId, product, batches[0], matchedMultiUnitId, searchedImei);
+      } else {
+        await completeProductSelection(lineId, product, undefined, matchedMultiUnitId, searchedImei);
+      }
+    },
+    [getBatchesForProduct, completeProductSelection, updateLine]
+  );
+
+  const handleBatchSelect = useCallback(async (selectedBatch: BatchOption) => {
+    if (pendingProductSelection) {
+      await completeProductSelection(
+        pendingProductSelection.lineId,
+        pendingProductSelection.product,
+        selectedBatch,
+        pendingProductSelection.matchedMultiUnitId,
+        pendingProductSelection.searchedImei
+      );
+    }
+    setBatchDialogOpen(false);
+    setAvailableBatches([]);
+    setPendingProductSelection(null);
+  }, [pendingProductSelection, completeProductSelection]);
+
+  const handleBatchDialogClose = useCallback(() => {
+    setBatchDialogOpen(false);
+    setAvailableBatches([]);
+    setPendingProductSelection(null);
+    setFocusedBatchIndex(0);
+  }, []);
+
+  const handleBatchDialogKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (!batchDialogOpen || availableBatches.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setFocusedBatchIndex((prev) => (prev < availableBatches.length - 1 ? prev + 1 : prev));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setFocusedBatchIndex((prev) => (prev > 0 ? prev - 1 : 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const selectedBatch = availableBatches[focusedBatchIndex];
+      if (selectedBatch) handleBatchSelect(selectedBatch);
+    } else if (e.key === 'Escape') {
+      handleBatchDialogClose();
+    }
+  }, [batchDialogOpen, availableBatches, focusedBatchIndex, handleBatchSelect, handleBatchDialogClose]);
 
   // Handle unit change in the grid — recalculate price/totals for new unit
   const handleUnitChange = useCallback(
@@ -548,17 +706,21 @@ export default function QuotationSales() {
       setLines((prev) =>
         prev.map((line) => {
           if (line.id !== lineId) return line;
-          // Calculate max qty for the new unit considering other rows
-          const usedByOtherRows = prev.reduce((sum, l) => {
-            if (l.id === lineId || l.productId !== line.productId) return sum;
-            const u = l.availableUnits.find((au) => au.id === l.unitId);
-            const conv = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
-            return sum + (l.quantity * conv);
-          }, 0);
-          const remainingPieces = line.baseStockPieces - usedByOtherRows;
           const conv = (selectedUnit.isMultiUnit && selectedUnit.conversion && selectedUnit.conversion > 0) ? selectedUnit.conversion : 1;
-          const maxQty = Math.max(remainingPieces / conv, 0);
-          const newQuantity = Math.min(1, parseFloat(maxQty.toFixed(4)));
+          let maxPieces: number;
+          if (line.batchMaxPieces != null && line.batchMaxPieces > 0) {
+            maxPieces = line.batchMaxPieces;
+          } else {
+            const usedByOtherRows = prev.reduce((sum, l) => {
+              if (l.id === lineId || l.productId !== line.productId) return sum;
+              const u = l.availableUnits.find((au) => au.id === l.unitId);
+              const c = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
+              return sum + (l.quantity * c);
+            }, 0);
+            maxPieces = line.baseStockPieces - usedByOtherRows;
+          }
+          const maxQty = Math.max(maxPieces / conv, 0);
+          const newQuantity = Math.min(line.quantity, parseFloat(maxQty.toFixed(4)));
 
           const updated = {
             ...line,
@@ -631,7 +793,7 @@ export default function QuotationSales() {
   }, [companyId]);
 
   /* ──── Key Navigation Handlers ──── */
-  const handleTextFieldFocus = (e: React.FocusEvent<HTMLInputElement>) => { e.target.select(); };
+  const handleTextFieldFocus = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement, Element>) => { e.target.select(); };
 
   const handleNumberKeyDown = (e: React.KeyboardEvent) => {
     // Prevent up/down arrow increment/decrement on number fields
@@ -823,24 +985,44 @@ export default function QuotationSales() {
     }
   }, []);
 
-  // Handle Enter key on Item Name field — matches SalesB2C logic
+  // Open batch dialog for a line that has a batched product (called only on Enter key in item field)
+  const openBatchDialogForLine = useCallback(async (line: LineItem) => {
+    if (!line.productId) return;
+    const product = products.find((p) => p._id === line.productId);
+    const isBatchedProduct = product?.allowBatches === true || (line.batchMaxPieces != null && line.batchMaxPieces > 0);
+    if (!product || !isBatchedProduct) return;
+    const batches = await getBatchesForProduct(product._id);
+    if (batches.length > 1) {
+      setAvailableBatches(batches);
+      setPendingProductSelection({ lineId: line.id, product });
+      setFocusedBatchIndex(0);
+      setBatchDialogOpen(true);
+    }
+  }, [products, getBatchesForProduct]);
+
+  // Handle Enter key on Item Name field; Enter on batched product opens batch dialog
   const handleItemNameKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
-      // Check if the Autocomplete dropdown is open — if so, let it handle the selection
-      const input = itemNameInputRefs.current[line.id];
-      if (input) {
-        const isDropdownOpen = input.getAttribute('aria-expanded') === 'true';
-        if (isDropdownOpen) {
-          // Dropdown is open — Autocomplete will handle the Enter key to select the highlighted option
-          setTimeout(() => {
-            qtyInputRefs.current[line.id]?.focus();
-            qtyInputRefs.current[line.id]?.select();
-          }, 150);
+      // If row already has a batched product, Enter always opens batch dialog (e.g. return to item field and press Enter)
+      if (line.productId) {
+        const product = products.find((p) => p._id === line.productId);
+        const isBatchedProduct = product?.allowBatches === true || (line.batchMaxPieces != null && line.batchMaxPieces > 0);
+        if (isBatchedProduct) {
+          e.preventDefault();
+          e.stopPropagation();
+          openBatchDialogForLine(line);
           return;
         }
       }
 
-      // If item name is blank and no product selected — jump to save button on last row
+      if (itemNameInputRefs.current[line.id]?.getAttribute('aria-expanded') === 'true') {
+        setTimeout(() => {
+          qtyInputRefs.current[line.id]?.focus();
+          qtyInputRefs.current[line.id]?.select();
+        }, 150);
+        return;
+      }
+
       if (!line.productId && !line.name.trim()) {
         const currentIndex = lines.findIndex((l) => l.id === line.id);
         if (currentIndex === lines.length - 1) {
@@ -850,7 +1032,6 @@ export default function QuotationSales() {
           return;
         }
       }
-      // If no product selected yet, try to match typed name to a product
       if (!line.productId && line.name.trim()) {
         const typed = line.name.trim().toLowerCase();
         const match = products.find((p) => p.name.toLowerCase() === typed);
@@ -865,7 +1046,6 @@ export default function QuotationSales() {
           return;
         }
       }
-      // If the row already has a product, check the typed name matches
       if (line.productId) {
         const product = products.find((p) => p._id === line.productId);
         if (product && line.name !== product.name) {
@@ -881,31 +1061,36 @@ export default function QuotationSales() {
             }, 100);
             return;
           }
-          // No match found — revert to original
           updateLine(line.id, 'name', product.name);
         }
-        // Move focus to qty field
         setTimeout(() => {
           qtyInputRefs.current[line.id]?.focus();
           qtyInputRefs.current[line.id]?.select();
         }, 50);
       }
     }
-  }, [products, updateLine, handleProductSelect, lines]);
+  }, [products, updateLine, handleProductSelect, lines, openBatchDialogForLine]);
 
-  // Handle Enter key on Qty field — focus on Price if qty > 0
-  const handleQtyKeyDown = useCallback((e: React.KeyboardEvent, lineId: string, qty: number) => {
+  // Handle Enter key on Qty field — focus on Price if qty > 0; if last row and any field blank, go to Save button
+  const handleQtyKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      if (qty > 0) {
-        const priceInput = priceInputRefs.current[lineId];
+      const currentIndex = lines.findIndex((l) => l.id === line.id);
+      const isLastRow = currentIndex === lines.length - 1;
+      const isBlank = !line.productCode || line.quantity <= 0 || line.price <= 0;
+      if (isLastRow && isBlank) {
+        setTimeout(() => saveButtonRef.current?.focus(), 50);
+        return;
+      }
+      if (line.quantity > 0) {
+        const priceInput = priceInputRefs.current[line.id];
         if (priceInput) {
           priceInput.focus();
           priceInput.select();
         }
       }
     }
-  }, []);
+  }, [lines]);
 
   const handleDiscPercentKeyDown = (e: React.KeyboardEvent, lineId: string) => {
     if (e.key === 'Enter') {
@@ -928,6 +1113,14 @@ export default function QuotationSales() {
 
       // Validate current row
       if (!line.productCode || !line.name || line.quantity <= 0 || line.price <= 0) {
+        const currentIndex = lines.findIndex((l) => l.id === line.id);
+        const isLastRow = currentIndex === lines.length - 1;
+        const isBlank = !line.productCode || line.quantity <= 0 || line.price <= 0;
+        // If last row and product code or qty or price is blank, go to Save button
+        if (isLastRow && isBlank) {
+          setTimeout(() => saveButtonRef.current?.focus(), 50);
+          return;
+        }
         if (!line.productCode || !line.name) {
           setTimeout(() => itemNameInputRefs.current[line.id]?.focus(), 50);
         } else if (line.quantity <= 0) {
@@ -969,6 +1162,44 @@ export default function QuotationSales() {
       }, 100);
     }
   }, [lines, enterRow]);
+
+  // Handle QTY blur — if qty exceeds stock, show dialog and keep focus on QTY field (matches SalesB2C)
+  const handleQtyBlur = useCallback((line: LineItem) => {
+    const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'quantity' ? editingNumericCell.value : '';
+    const parsedQty = parseNumericInput(raw);
+    setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'quantity' ? null : prev);
+
+    if (!line.productId) {
+      updateLine(line.id, 'quantity', parsedQty);
+      return;
+    }
+
+    const currentUnit = line.availableUnits.find((u) => u.id === line.unitId);
+    const conv = (currentUnit?.isMultiUnit && currentUnit?.conversion) ? currentUnit.conversion : 1;
+    let maxQtyForThisRow = 0;
+    if (line.batchMaxPieces != null && line.batchMaxPieces > 0) {
+      maxQtyForThisRow = line.batchMaxPieces / conv;
+    } else if (line.baseStockPieces > 0) {
+      const usedByOtherRows = lines.reduce((sum, l) => {
+        if (l.id === line.id || l.productId !== line.productId) return sum;
+        const u = l.availableUnits.find((au) => au.id === l.unitId);
+        const c = (u?.isMultiUnit && u?.conversion) ? u.conversion : 1;
+        return sum + (l.quantity * c);
+      }, 0);
+      const remainingPieces = line.baseStockPieces - usedByOtherRows;
+      maxQtyForThisRow = remainingPieces / conv;
+    }
+
+    const cappedQty = Math.max(parseFloat((maxQtyForThisRow || 0).toFixed(4)), 0);
+    if (maxQtyForThisRow > 0 && parsedQty > cappedQty) {
+      setStockAlertMessage('Qty not available');
+      setStockAlertOpen(true);
+      qtyOverflowLineIdRef.current = line.id;
+      updateLine(line.id, 'quantity', cappedQty);
+    } else {
+      updateLine(line.id, 'quantity', parsedQty);
+    }
+  }, [lines, editingNumericCell, updateLine]);
 
   /* ──── Row Click - update product info ──── */
   const handleRowClick = useCallback(async (line: LineItem) => {
@@ -1311,7 +1542,7 @@ export default function QuotationSales() {
               isOptionEqualToValue={(o, v) => typeof o !== 'string' && typeof v !== 'string' && o._id === v._id}
               value={customers.find((c) => c.name === customerName) || null}
               onChange={(_, v) => handleCustomerSelect(v && typeof v !== 'string' ? v : null)}
-              renderInput={(params) => <TextField {...params} label="Cash / Customer A/C" InputLabelProps={{ shrink: true }} inputRef={customerAcRef} onKeyDown={handleCustomerAcKeyDown} sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />}
+              renderInput={(params) => <TextField {...params} label="Cash / Customer A/C" InputLabelProps={{ shrink: true }} inputRef={customerAcRef} autoFocus onKeyDown={handleCustomerAcKeyDown} sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />}
             />
           </Grid>
           <Grid item xs={6} sm={3} md={2.5} lg={2.5}>
@@ -1571,19 +1802,24 @@ export default function QuotationSales() {
                   </TableCell>
                   {/* Qty */}
                   <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
-                    <TextField size="small" variant="outlined" type="number" value={line.quantity || ''}
-                      onChange={(e) => updateLine(line.id, 'quantity', e.target.value === '' ? 0 : parseFloat(e.target.value) || 0)}
-                      onFocus={handleTextFieldFocus} onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, qtyInputRefs); handleNumberKeyDown(e); handleQtyKeyDown(e, line.id, line.quantity); }}
+                    <TextField size="small" variant="outlined" type="number"
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'quantity' ? editingNumericCell.value : (line.quantity === 0 ? '' : String(line.quantity))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'quantity', value: line.quantity === 0 ? '' : String(line.quantity) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'quantity' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => handleQtyBlur(line)}
+                      onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, qtyInputRefs); handleNumberKeyDown(e); handleQtyKeyDown(e, line); }}
                       inputRef={(el) => { qtyInputRefs.current[line.id] = el; }}
                       inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.82rem' }, inputMode: 'decimal' }}
                       fullWidth sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3 } }} />
                   </TableCell>
                   {/* Price */}
                   <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
-                    <TextField size="small" variant="outlined" type="number" value={line.price || ''}
-                      onChange={(e) => updateLine(line.id, 'price', e.target.value === '' ? 0 : parseFloat(e.target.value) || 0)}
-                      onBlur={() => { if (line.price) updateLine(line.id, 'price', parseFloat(line.price.toFixed(2))); }}
-                      onFocus={handleTextFieldFocus} onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, priceInputRefs); handleNumberKeyDown(e); handlePriceKeyDown(e, line); }}
+                    <TextField size="small" variant="outlined" type="number"
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'price' ? editingNumericCell.value : (line.price === 0 ? '' : String(line.price))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'price', value: line.price === 0 ? '' : String(line.price) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'price' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'price' ? editingNumericCell.value : ''; const num = parseFloat(parseNumericInput(raw).toFixed(2)); updateLine(line.id, 'price', num); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'price' ? null : prev); }}
+                      onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, priceInputRefs); handleNumberKeyDown(e); handlePriceKeyDown(e, line); }}
                       inputRef={(el) => { priceInputRefs.current[line.id] = el; }}
                       inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.82rem' }, inputMode: 'decimal' }}
                       fullWidth sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3 } }} />
@@ -1592,18 +1828,24 @@ export default function QuotationSales() {
                   <TableCell align="right" sx={{ p: '5px 6px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6', fontSize: '0.82rem', fontWeight: 500, color: '#475569' }}>{line.gross.toFixed(2)}</TableCell>
                   {/* Disc% */}
                   <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
-                    <TextField size="small" variant="outlined" type="number" value={line.discPercent || ''}
-                      onChange={(e) => updateLine(line.id, 'discPercent', e.target.value === '' ? 0 : parseFloat(e.target.value) || 0)}
-                      onFocus={handleTextFieldFocus} onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, discPercentInputRefs); handleNumberKeyDown(e); handleDiscPercentKeyDown(e, line.id); }}
+                    <TextField size="small" variant="outlined" type="number"
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discPercent' ? editingNumericCell.value : (line.discPercent === 0 ? '' : String(line.discPercent))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'discPercent', value: line.discPercent === 0 ? '' : String(line.discPercent) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'discPercent' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discPercent' ? editingNumericCell.value : ''; updateLine(line.id, 'discPercent', parseNumericInput(raw)); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'discPercent' ? null : prev); }}
+                      onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, discPercentInputRefs); handleNumberKeyDown(e); handleDiscPercentKeyDown(e, line.id); }}
                       inputRef={(el) => { discPercentInputRefs.current[line.id] = el; }}
                       inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.82rem' } }}
                       fullWidth sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3 } }} />
                   </TableCell>
                   {/* Disc Amt */}
                   <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
-                    <TextField size="small" variant="outlined" type="number" value={line.discAmount || ''}
-                      onChange={(e) => updateLine(line.id, 'discAmount', e.target.value === '' ? 0 : parseFloat(e.target.value) || 0)}
-                      onFocus={handleTextFieldFocus} onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, discAmountInputRefs); handleNumberKeyDown(e); handleDiscAmountKeyDown(e, line.id); }}
+                    <TextField size="small" variant="outlined" type="number"
+                      value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discAmount' ? editingNumericCell.value : (line.discAmount === 0 ? '' : String(line.discAmount))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'discAmount', value: line.discAmount === 0 ? '' : String(line.discAmount) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'discAmount' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discAmount' ? editingNumericCell.value : ''; updateLine(line.id, 'discAmount', parseNumericInput(raw)); setEditingNumericCell((prev) => prev && prev.lineId === line.id && prev.field === 'discAmount' ? null : prev); }}
+                      onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, discAmountInputRefs); handleNumberKeyDown(e); handleDiscAmountKeyDown(e, line.id); }}
                       inputRef={(el) => { discAmountInputRefs.current[line.id] = el; }}
                       inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.82rem' } }}
                       fullWidth sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3 } }} />
@@ -1638,33 +1880,48 @@ export default function QuotationSales() {
               </Typography>
               <Grid container spacing={1}>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Disc %" type="number" value={otherDiscPercent || ''}
-                    onChange={(e) => handleOtherDiscPercentChange(parseFloat(e.target.value) || 0)}
-                    onFocus={handleTextFieldFocus} onKeyDown={handleNumberKeyDown}
+                  <TextField size="small" label="Other Disc %" type="number"
+                    value={editingNumericCell?.field === 'otherDiscPercent' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscPercent === 0 ? '' : String(otherDiscPercent))}
+                    onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscPercent', value: otherDiscPercent === 0 ? '' : String(otherDiscPercent) }); }}
+                    onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? { ...prev, value: e.target.value } : prev)}
+                    onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscPercent' ? editingNumericCell.value : ''; handleOtherDiscPercentChange(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? null : prev); }}
+                    onKeyDown={handleNumberKeyDown}
                     inputProps={{ inputMode: 'decimal', max: 100 }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Discount" type="number" value={otherDiscount || ''}
-                    onChange={(e) => { setOtherDiscount(parseFloat(e.target.value) || 0); setOtherDiscPercent(0); }}
-                    onFocus={handleTextFieldFocus} onKeyDown={handleNumberKeyDown}
+                  <TextField size="small" label="Other Discount" type="number"
+                    value={editingNumericCell?.field === 'otherDiscount' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscount === 0 ? '' : String(otherDiscount))}
+                    onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscount', value: otherDiscount === 0 ? '' : String(otherDiscount) }); }}
+                    onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? { ...prev, value: e.target.value } : prev)}
+                    onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscount' ? editingNumericCell.value : ''; setOtherDiscount(parseNumericInput(raw)); setOtherDiscPercent(0); setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? null : prev); }}
+                    onKeyDown={handleNumberKeyDown}
                     inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Charges" type="number" value={otherCharges || ''}
-                    onChange={(e) => setOtherCharges(parseFloat(e.target.value) || 0)}
-                    onFocus={handleTextFieldFocus} onKeyDown={handleNumberKeyDown}
+                  <TextField size="small" label="Other Charges" type="number"
+                    value={editingNumericCell?.field === 'otherCharges' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))}
+                    onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) }); }}
+                    onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)}
+                    onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? null : prev); }}
+                    onKeyDown={handleNumberKeyDown}
                     inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Freight Charge" type="number" value={freightCharge || ''}
-                    onChange={(e) => setFreightCharge(parseFloat(e.target.value) || 0)}
-                    onFocus={handleTextFieldFocus} onKeyDown={handleNumberKeyDown}
+                  <TextField size="small" label="Freight Charge" type="number"
+                    value={editingNumericCell?.field === 'freightCharge' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (freightCharge === 0 ? '' : String(freightCharge))}
+                    onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'freightCharge', value: freightCharge === 0 ? '' : String(freightCharge) }); }}
+                    onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? { ...prev, value: e.target.value } : prev)}
+                    onBlur={() => { const raw = editingNumericCell?.field === 'freightCharge' ? editingNumericCell.value : ''; setFreightCharge(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? null : prev); }}
+                    onKeyDown={handleNumberKeyDown}
                     inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Round Off" type="number" value={roundOff || ''}
-                    onChange={(e) => setRoundOff(parseFloat(e.target.value) || 0)}
-                    onFocus={handleTextFieldFocus} onKeyDown={handleNumberKeyDown}
+                  <TextField size="small" label="Round Off" type="number"
+                    value={editingNumericCell?.field === 'roundOff' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))}
+                    onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) }); }}
+                    onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev)}
+                    onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'roundOff' ? null : prev); }}
+                    onKeyDown={handleNumberKeyDown}
                     inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={6}>
@@ -1695,6 +1952,10 @@ export default function QuotationSales() {
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                   <Typography sx={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 500 }}>This Quotation</Typography>
                   <Typography sx={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e293b' }}>{calculations.subTotal.toFixed(2)}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                  <Typography sx={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 500 }}>Total VAT</Typography>
+                  <Typography sx={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e293b' }}>{calculations.totalVat.toFixed(2)}</Typography>
                 </Box>
                 {[
                   { label: 'Freight Chgs', value: freightCharge },
@@ -1810,12 +2071,94 @@ export default function QuotationSales() {
       </Dialog>
 
       {/* Stock Alert */}
-      <Dialog open={stockAlertOpen} onClose={() => setStockAlertOpen(false)} disableRestoreFocus PaperProps={{ sx: { borderRadius: 2, minWidth: 350 } }}
+      <Dialog open={stockAlertOpen} onClose={() => {
+        setStockAlertOpen(false);
+        const lineId = qtyOverflowLineIdRef.current;
+        if (lineId) {
+          qtyOverflowLineIdRef.current = null;
+          setTimeout(() => qtyInputRefs.current[lineId]?.focus(), 50);
+        }
+      }} disableRestoreFocus PaperProps={{ sx: { borderRadius: 2, minWidth: 350 } }}
         TransitionProps={{ onEntered: (node) => { (node as HTMLElement).querySelector<HTMLButtonElement>('[data-confirm-btn]')?.focus(); } }}>
         <DialogTitle sx={{ fontWeight: 700, fontSize: '1rem', color: '#ea580c' }}>Stock Alert</DialogTitle>
         <DialogContent><Typography sx={{ fontSize: '0.9rem', color: '#475569' }}>{stockAlertMessage}</Typography></DialogContent>
         <DialogActions sx={{ px: 2, pb: 2 }}>
-          <Button variant="contained" data-confirm-btn onClick={() => setStockAlertOpen(false)} sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#ea580c', '&:hover': { bgcolor: '#c2410c' }, boxShadow: 'none' }}>OK</Button>
+          <Button variant="contained" data-confirm-btn onClick={() => {
+            setStockAlertOpen(false);
+            const lineId = qtyOverflowLineIdRef.current;
+            if (lineId) {
+              qtyOverflowLineIdRef.current = null;
+              setTimeout(() => qtyInputRefs.current[lineId]?.focus(), 50);
+            }
+          }} sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#ea580c', '&:hover': { bgcolor: '#c2410c' }, boxShadow: 'none' }}>OK</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Batch Selection Dialog */}
+      <Dialog
+        open={batchDialogOpen}
+        onClose={handleBatchDialogClose}
+        onKeyDown={handleBatchDialogKeyDown}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 2 } }}
+      >
+        <DialogTitle sx={{ bgcolor: '#f8fafc', borderBottom: '1px solid #e2e8f0', py: 1.5 }}>
+          <Typography sx={{ fontWeight: 700, fontSize: '0.95rem', color: '#1e293b' }}>Select Batch</Typography>
+          {pendingProductSelection && (
+            <Typography sx={{ fontSize: '0.82rem', color: '#64748b', mt: 0.3 }}>{pendingProductSelection.product.name}</Typography>
+          )}
+        </DialogTitle>
+        <DialogContent sx={{ p: 0 }}>
+          <TableContainer sx={{ maxHeight: 300 }}>
+            <Table stickyHeader size="small">
+              <TableHead>
+                <TableRow>
+                  {['Batch No', 'Expiry Date', 'Stock', 'P.Rate', rateType === 'WSale' ? 'W.Sale' : 'Retail', 'Action'].map((label, ci) => (
+                    <TableCell key={ci} align={ci >= 2 && ci <= 4 ? 'right' : ci === 5 ? 'center' : 'left'}
+                      sx={{ bgcolor: '#f0fdfa', fontWeight: 600, fontSize: '0.72rem', color: '#0f766e', py: 1, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                      {label}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {availableBatches.map((batch, index) => (
+                  <TableRow
+                    key={batch.batchNumber}
+                    ref={(el) => { batchRowRefs.current[index] = el; }}
+                    hover
+                    sx={{
+                      cursor: 'pointer',
+                      '&:hover': { bgcolor: '#f0fdfa' },
+                      bgcolor: index === focusedBatchIndex ? '#ccfbf1 !important' : (index % 2 === 0 ? '#ffffff' : '#fafafa'),
+                      outline: index === focusedBatchIndex ? '2px solid #0f766e' : 'none',
+                      transition: 'all 0.1s',
+                    }}
+                    onClick={() => handleBatchSelect(batch)}
+                  >
+                    <TableCell sx={{ fontSize: '0.8rem', color: '#334155', py: 0.75 }}>
+                      {batch.batchNumber.length > 15 ? batch.batchNumber.substring(0, 15) + '...' : batch.batchNumber}
+                    </TableCell>
+                    <TableCell sx={{ fontSize: '0.8rem', color: '#475569', py: 0.75 }}>{batch.expiryDate || '-'}</TableCell>
+                    <TableCell align="right" sx={{ fontSize: '0.8rem', color: '#1e293b', py: 0.75, fontWeight: 600 }}>{batch.quantity}</TableCell>
+                    <TableCell align="right" sx={{ fontSize: '0.8rem', color: '#64748b', py: 0.75 }}>{batch.purchasePrice.toFixed(2)}</TableCell>
+                    <TableCell align="right" sx={{ fontSize: '0.8rem', color: '#1e293b', py: 0.75, fontWeight: 600 }}>{(rateType === 'WSale' ? batch.wholesale : batch.retail).toFixed(2)}</TableCell>
+                    <TableCell align="center" sx={{ py: 0.75 }}>
+                      <Button size="small" variant="contained"
+                        onClick={(e) => { e.stopPropagation(); handleBatchSelect(batch); }}
+                        sx={{ minWidth: 'auto', px: 1.5, py: 0.25, fontSize: '0.7rem', borderRadius: 1, boxShadow: 'none', bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' } }}>
+                        Select
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </DialogContent>
+        <DialogActions sx={{ bgcolor: '#f8fafc', borderTop: '1px solid #e2e8f0', px: 2, py: 1 }}>
+          <Button onClick={handleBatchDialogClose} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>Cancel</Button>
         </DialogActions>
       </Dialog>
 

@@ -3,6 +3,24 @@ import ExcelJS from 'exceljs';
 import { AuthRequest } from '../middlewares/auth';
 import * as ledgerService from '../services/ledgerService';
 
+export async function getEntriesByVoucher(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const voucherId = req.query.voucherId as string;
+    if (!voucherId) {
+      res.status(400).json({ success: false, message: 'voucherId required' });
+      return;
+    }
+    const data = await ledgerService.getEntriesByVoucherId(voucherId);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getLedgerReport(
   req: AuthRequest,
   res: Response,

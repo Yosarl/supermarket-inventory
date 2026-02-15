@@ -32,4 +32,15 @@ router.post(
 router.put('/b2c/:id', salesController.updateB2CSale);
 router.delete('/b2c/:id', salesController.deleteB2CSale);
 
+// Sales Return
+router.get('/return/next-invoice-no', salesController.getNextReturnInvoiceNo);
+router.get('/return/search', salesController.searchSalesReturnByInvoiceNo);
+router.get('/return/:id', salesController.getSalesReturn);
+router.post(
+  '/return',
+  validate(salesController.createSalesReturnValidators),
+  salesController.createSalesReturn
+);
+router.delete('/return/:id', salesController.deleteSalesReturn);
+
 export default router;

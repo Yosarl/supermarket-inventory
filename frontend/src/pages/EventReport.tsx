@@ -14,6 +14,7 @@ export default function EventReport() {
   const companyId = useAppSelector((s) => s.app.selectedCompanyId);
 
   const load = () => {
+    if (!companyId) return;
     setLoading(true);
     auditLogApi.list({ companyId, fromDate: fromDate || undefined, toDate: toDate || undefined, limit: 100 }).then((res) => {
       const d = res.data.data as { logs: Log[]; total: number };

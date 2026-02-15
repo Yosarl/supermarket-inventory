@@ -1,8 +1,9 @@
+/// <reference types="vite/client" />
 import axios from 'axios';
 
 // In development, Vite proxies /api → localhost:5000 so relative '/api' works.
 // In the packaged Electron app there is no proxy, so we hit the backend directly.
-const isElectronProd = !import.meta.env.DEV && typeof window !== 'undefined' && !!(window as Record<string, unknown>).electronAPI;
+const isElectronProd = !import.meta.env.DEV && typeof window !== 'undefined' && !!(window as unknown as Record<string, unknown>).electronAPI;
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || (isElectronProd ? 'http://localhost:5000/api' : '/api'),
@@ -140,6 +141,7 @@ export interface B2CInvoiceInput {
   rateType?: 'Retail' | 'WSale' | 'Special1' | 'Special2';
   paymentType?: 'Cash' | 'Credit';
   vatType?: 'Vat' | 'NonVat';
+  taxMode?: 'inclusive' | 'exclusive';
   cashAccountId?: string;
   otherDiscount?: number;
   otherCharges?: number;
@@ -189,6 +191,50 @@ export const salesApi = {
       `/sales/b2c/product-history/${productId}`,
       { params: { companyId, ...(customerId ? { customerId } : {}) } }
     ),
+
+  // Sales Return
+  getNextReturnInvoiceNo: (companyId: string, financialYearId: string) =>
+    api.get<{ success: boolean; data: { invoiceNo: string } }>('/sales/return/next-invoice-no', {
+      params: { companyId, financialYearId },
+    }),
+  createSalesReturn: (data: {
+    companyId: string;
+    financialYearId: string;
+    date?: string;
+    returnType: 'OnAccount' | 'ByRef';
+    originalInvoiceId?: string;
+    customerId?: string;
+    customerName?: string;
+    customerAddress?: string;
+    customerPhone?: string;
+    cashAccountId?: string;
+    vatType?: 'Vat' | 'NonVat';
+    taxMode?: 'inclusive' | 'exclusive';
+    items: Array<{
+      productId: string;
+      productCode?: string;
+      imei?: string;
+      description?: string;
+      quantity: number;
+      unitPrice: number;
+      discountPercent?: number;
+      discount?: number;
+      unitId?: string;
+      unitName?: string;
+      multiUnitId?: string;
+      batchNumber?: string;
+    }>;
+    otherDiscount?: number;
+    otherCharges?: number;
+    roundOff?: number;
+    narration?: string;
+  }) => api.post<{ success: boolean; data: { invoiceId: string; invoiceNo: string } }>('/sales/return', data),
+  searchSalesReturn: (companyId: string, invoiceNo: string) =>
+    api.get('/sales/return/search', { params: { companyId, invoiceNo } }),
+  getSalesReturn: (invoiceId: string, companyId: string) =>
+    api.get(`/sales/return/${invoiceId}`, { params: { companyId } }),
+  deleteSalesReturn: (invoiceId: string, companyId: string) =>
+    api.delete(`/sales/return/${invoiceId}`, { params: { companyId } }),
 };
 
 export const stockApi = {
@@ -238,6 +284,8 @@ export interface PurchaseInvoiceData {
   vatType: 'Vat' | 'NonVat';
   narration: string;
   totalAmount: number;
+  voucherId?: string;
+  voucherNo?: string;
   itemsDiscount?: number;
   otherDiscount?: number;
   otherCharges?: number;
@@ -277,6 +325,7 @@ export const purchaseApi = {
     supplierId?: string;
     supplierName?: string;
     vatType?: 'Vat' | 'NonVat';
+    taxMode?: 'inclusive' | 'exclusive';
     narration?: string;
     itemsDiscount?: number;
     otherDiscount?: number;
@@ -313,6 +362,7 @@ export const purchaseApi = {
     supplierId?: string;
     supplierName?: string;
     vatType?: 'Vat' | 'NonVat';
+    taxMode?: 'inclusive' | 'exclusive';
     narration?: string;
     itemsDiscount?: number;
     otherDiscount?: number;
@@ -359,16 +409,125 @@ export const purchaseApi = {
     }),
 
   getProductBatches: (companyId: string, productId: string) =>
-    api.get<{ success: boolean; data: Array<{
-      batchNumber: string;
+    api.get<{
+      success: boolean; data: Array<{
+        batchNumber: string;
+        productId: string;
+        productName: string;
+        purchasePrice: number;
+        expiryDate: string;
+        quantity: number;
+        retail: number;
+        wholesale: number;
+      }>
+    }>(`/purchases/product-batches/${productId}`, {
+      params: { companyId },
+    }),
+};
+
+// ─── Purchase Order API ─────────────────────────────────────
+
+export interface PurchaseOrderListItem {
+  _id: string;
+  invoiceNo: string;
+  date: string;
+  supplierName: string;
+  totalAmount: number;
+}
+
+export const purchaseOrderApi = {
+  create: (data: {
+    companyId: string;
+    financialYearId: string;
+    invoiceNo: string;
+    supplierInvoiceNo?: string;
+    date?: string;
+    supplierId?: string;
+    supplierName?: string;
+    vatType?: 'Vat' | 'NonVat';
+    taxMode?: 'inclusive' | 'exclusive';
+    narration?: string;
+    itemsDiscount?: number;
+    otherDiscount?: number;
+    otherCharges?: number;
+    freightCharge?: number;
+    roundOff?: number;
+    batches: Array<{
       productId: string;
-      productName: string;
+      productCode?: string;
+      productName?: string;
       purchasePrice: number;
-      expiryDate: string;
+      discAmount?: number;
+      expiryDate?: string;
       quantity: number;
-      retail: number;
-      wholesale: number;
-    }> }>(`/purchases/product-batches/${productId}`, {
+      retail?: number;
+      wholesale?: number;
+      specialPrice1?: number;
+      specialPrice2?: number;
+      batchNumber?: string;
+      multiUnitId?: string;
+    }>;
+  }) =>
+    api.post<{ success: boolean; data: { purchaseOrderId: string; invoiceNo: string; batchCount: number } }>(
+      '/purchase-orders',
+      data
+    ),
+
+  update: (id: string, data: {
+    companyId: string;
+    financialYearId: string;
+    invoiceNo: string;
+    supplierInvoiceNo?: string;
+    date?: string;
+    supplierId?: string;
+    supplierName?: string;
+    vatType?: 'Vat' | 'NonVat';
+    taxMode?: 'inclusive' | 'exclusive';
+    narration?: string;
+    itemsDiscount?: number;
+    otherDiscount?: number;
+    otherCharges?: number;
+    freightCharge?: number;
+    roundOff?: number;
+    batches: Array<{
+      productId: string;
+      productCode?: string;
+      productName?: string;
+      purchasePrice: number;
+      discAmount?: number;
+      expiryDate?: string;
+      quantity: number;
+      retail?: number;
+      wholesale?: number;
+      specialPrice1?: number;
+      specialPrice2?: number;
+      batchNumber?: string;
+      multiUnitId?: string;
+    }>;
+  }) =>
+    api.put<{ success: boolean; data: { purchaseOrderId: string; invoiceNo: string; batchCount: number } }>(
+      `/purchase-orders/${id}`,
+      data
+    ),
+
+  delete: (id: string, companyId: string) =>
+    api.delete(`/purchase-orders/${id}`, { params: { companyId } }),
+
+  list: (companyId: string, financialYearId?: string) =>
+    api.get<{ success: boolean; data: PurchaseOrderListItem[] }>('/purchase-orders', {
+      params: { companyId, financialYearId },
+    }),
+
+  getById: (id: string) =>
+    api.get<{ success: boolean; data: PurchaseInvoiceData }>(`/purchase-orders/${id}`),
+
+  search: (companyId: string, invoiceNo: string) =>
+    api.get<{ success: boolean; data: PurchaseInvoiceData }>('/purchase-orders/search', {
+      params: { companyId, invoiceNo },
+    }),
+
+  getNextInvoiceNo: (companyId: string) =>
+    api.get<{ success: boolean; data: { invoiceNo: string } }>('/purchase-orders/next-invoice-no', {
       params: { companyId },
     }),
 };
@@ -434,6 +593,11 @@ export const quotationApi = {
 };
 
 export const ledgerApi = {
+  entriesByVoucher: (voucherId: string) =>
+    api.get<{ success: boolean; data: Array<{ ledgerAccountCode: string; ledgerAccountName: string; debitAmount: number; creditAmount: number; narration?: string }> }>(
+      '/ledger/entries-by-voucher',
+      { params: { voucherId } }
+    ),
   trialBalance: (companyId: string, financialYearId: string, asAtDate?: string) =>
     api.get<{ success: boolean; data: { rows: unknown[]; totalDebit: number; totalCredit: number; balanced: boolean } }>(
       '/ledger/trial-balance',
@@ -510,4 +674,39 @@ export const userApi = {
 export const auditLogApi = {
   list: (params?: { companyId?: string; userId?: string; entityType?: string; action?: string; fromDate?: string; toDate?: string; page?: number; limit?: number }) =>
     api.get<{ success: boolean; data: { logs: unknown[]; total: number } }>('/audit-logs', { params }),
+};
+
+export interface OutstandingBill {
+  billNumber: string;
+  date: string;
+  totalAmount: number;
+  settledAmount: number;
+  outstandingAmount: number;
+  drCr: 'Dr' | 'Cr';
+  referenceType: string;
+  referenceId: string;
+}
+
+export const billReferenceApi = {
+  getOutstanding: (companyId: string, ledgerAccountId: string) =>
+    api.get<{ success: boolean; data: OutstandingBill[] }>('/bill-references/outstanding', {
+      params: { companyId, ledgerAccountId },
+    }),
+  getHistory: (companyId: string, ledgerAccountId: string) =>
+    api.get<{ success: boolean; data: unknown[] }>('/bill-references/history', {
+      params: { companyId, ledgerAccountId },
+    }),
+  settle: (data: {
+    companyId: string;
+    financialYearId: string;
+    voucherId: string;
+    date: string;
+    settlements: Array<{
+      ledgerAccountId: string;
+      billNumber: string;
+      amount: number;
+      drCr: 'Dr' | 'Cr';
+      narration?: string;
+    }>;
+  }) => api.post<{ success: boolean; data: unknown }>('/bill-references/settle', data),
 };

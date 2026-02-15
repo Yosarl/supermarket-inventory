@@ -1,0 +1,12 @@
+# Normalize line endings: use LF in the repo (cross-platform).
+# This prevents "LF will be replaced by CRLF" warnings on Windows when running git add.
+* text=auto eol=lf
+
+# Binary files: do not modify line endings
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

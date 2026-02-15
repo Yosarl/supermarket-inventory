@@ -135,6 +135,28 @@ export async function getLedgerReport(
   };
 }
 
+export async function getEntriesByVoucherId(voucherId: string): Promise<Array<{
+  ledgerAccountId: string;
+  ledgerAccountName: string;
+  ledgerAccountCode: string;
+  debitAmount: number;
+  creditAmount: number;
+  narration?: string;
+}>> {
+  const entries = await LedgerEntry.find({ voucherId: new mongoose.Types.ObjectId(voucherId) })
+    .populate('ledgerAccountId', 'name code')
+    .sort({ createdAt: 1 })
+    .lean();
+  return entries.map((e: any) => ({
+    ledgerAccountId: e.ledgerAccountId?._id?.toString() ?? e.ledgerAccountId?.toString(),
+    ledgerAccountName: e.ledgerAccountId?.name ?? '',
+    ledgerAccountCode: e.ledgerAccountId?.code ?? '',
+    debitAmount: e.debitAmount ?? 0,
+    creditAmount: e.creditAmount ?? 0,
+    narration: e.narration,
+  }));
+}
+
 export async function getTrialBalance(
   companyId: string,
   financialYearId: string,

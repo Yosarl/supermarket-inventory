@@ -6,6 +6,7 @@ const router = Router();
 
 router.use(authenticate);
 
+router.get('/entries-by-voucher', ledgerController.getEntriesByVoucher);
 router.get('/report', ledgerController.getLedgerReport);
 router.get('/trial-balance', ledgerController.getTrialBalance);
 router.get('/trial-balance/export', ledgerController.exportTrialBalance);

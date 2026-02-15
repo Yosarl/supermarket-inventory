@@ -1,0 +1,34 @@
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import electron from 'vite-plugin-electron/simple';
+export default defineConfig(function (_a) {
+    var mode = _a.mode;
+    return ({
+        plugins: [
+            react(),
+            electron({
+                main: {
+                    // Main process entry file
+                    entry: 'electron/main.ts',
+                },
+                preload: {
+                    // Preload scripts entry
+                    input: 'electron/preload.ts',
+                },
+                // Enable use of Node.js API in the Renderer process
+                renderer: {},
+            }),
+        ],
+        base: './',
+        resolve: {
+            alias: { '@': '/src' },
+        },
+        server: {
+            port: 3000,
+            proxy: {
+                '/api': { target: 'http://localhost:5000', changeOrigin: true },
+                '/uploads': { target: 'http://localhost:5000', changeOrigin: true },
+            },
+        },
+    });
+});

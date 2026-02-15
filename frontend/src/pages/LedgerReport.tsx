@@ -8,7 +8,7 @@ export default function LedgerReport() {
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [fromDate, setFromDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0]);
-  const [data, setData] = useState<{ openingBalance: number; openingIsDebit: boolean; transactions: Array<{ date: string; voucherNo?: string; debit: number; credit: number; balance: number; balanceIsDebit: boolean }>; closingBalance: number; closingIsDebit: boolean } | null>(null);
+  const [data, setData] = useState<{ openingBalance: number; openingIsDebit: boolean; transactions: Array<{ date: string; voucherNo?: string; narration?: string; debit: number; credit: number; balance: number; balanceIsDebit: boolean }>; closingBalance: number; closingIsDebit: boolean } | null>(null);
   const [loading, setLoading] = useState(false);
   const companyId = useAppSelector((s) => s.app.selectedCompanyId);
   const financialYearId = useAppSelector((s) => s.app.selectedFinancialYearId);
@@ -45,6 +45,7 @@ export default function LedgerReport() {
               <TableRow>
                 <TableCell>Date</TableCell>
                 <TableCell>Voucher</TableCell>
+                <TableCell>Particulars / Narration</TableCell>
                 <TableCell align="right">Debit</TableCell>
                 <TableCell align="right">Credit</TableCell>
                 <TableCell align="right">Balance</TableCell>
@@ -52,7 +53,7 @@ export default function LedgerReport() {
             </TableHead>
             <TableBody>
               <TableRow>
-                <TableCell colSpan={2}>Opening</TableCell>
+                <TableCell colSpan={3}>Opening</TableCell>
                 <TableCell align="right">{data.openingIsDebit ? data.openingBalance.toFixed(2) : ''}</TableCell>
                 <TableCell align="right">{!data.openingIsDebit ? data.openingBalance.toFixed(2) : ''}</TableCell>
                 <TableCell align="right">{data.openingBalance.toFixed(2)} {data.openingIsDebit ? 'Dr' : 'Cr'}</TableCell>
@@ -61,13 +62,14 @@ export default function LedgerReport() {
                 <TableRow key={i}>
                   <TableCell>{new Date(t.date).toLocaleDateString()}</TableCell>
                   <TableCell>{t.voucherNo}</TableCell>
+                  <TableCell sx={{ maxWidth: 280 }} title={t.narration}>{t.narration || '-'}</TableCell>
                   <TableCell align="right">{t.debit > 0 ? t.debit.toFixed(2) : ''}</TableCell>
                   <TableCell align="right">{t.credit > 0 ? t.credit.toFixed(2) : ''}</TableCell>
                   <TableCell align="right">{t.balance.toFixed(2)} {t.balanceIsDebit ? 'Dr' : 'Cr'}</TableCell>
                 </TableRow>
               ))}
               <TableRow>
-                <TableCell colSpan={3}>Closing</TableCell>
+                <TableCell colSpan={4}>Closing</TableCell>
                 <TableCell />
                 <TableCell align="right"><strong>{data.closingBalance.toFixed(2)} {data.closingIsDebit ? 'Dr' : 'Cr'}</strong></TableCell>
               </TableRow>

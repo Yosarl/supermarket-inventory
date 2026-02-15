@@ -10,6 +10,7 @@ import { Voucher } from '../models/Voucher';
 import { AppError } from '../middlewares/errorHandler';
 import * as ledgerService from './ledgerService';
 import * as voucherService from './voucherService';
+import * as billReferenceService from './billReferenceService';
 
 /**
  * Find or auto-create a LedgerGroup by type.
@@ -365,6 +366,7 @@ export interface CreateB2CSaleInput {
   rateType?: 'Retail' | 'WSale' | 'Special1' | 'Special2';
   paymentType?: 'Cash' | 'Credit';
   vatType?: 'Vat' | 'NonVat';
+  taxMode?: 'inclusive' | 'exclusive';
   cashAccountId?: string;
   otherDiscount?: number;
   otherCharges?: number;
@@ -398,14 +400,14 @@ export async function getNextB2CInvoiceNo(companyId: string, financialYearId: st
 export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoiceId: string; invoiceNo: string }> {
   const company = await Company.findById(input.companyId);
   if (!company) throw new AppError('Company not found', 404);
-  
+
   const vatRatePct = input.vatType === 'NonVat' ? 0 : (company.vatConfig?.standardRate ?? 5);
   const saleDate = input.date ? new Date(input.date) : new Date();
 
   let itemsGross = 0;
   let itemsDiscount = 0;
   let itemsVat = 0;
-  
+
   const lineItems: Array<{
     productId: mongoose.Types.ObjectId;
     productCode: string;
@@ -474,7 +476,7 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
 
     // Track what this line consumes
     usedStockMap.set(pid, alreadyUsed + requiredStock);
-    
+
     const qty = item.quantity;
     const price = item.unitPrice;
     const gross = qty * price;
@@ -482,13 +484,22 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
     const disc = item.discount ?? (gross * discPct / 100);
     const net = gross - disc;
     const vatRate = input.vatType === 'NonVat' ? 0 : (item.vatRate ?? vatRatePct);
-    const vatAmt = net * (vatRate / 100);
-    const total = net + vatAmt;
-    
+    // Match frontend: inclusive = price includes VAT (extract VAT); exclusive = VAT on top
+    const taxMode = input.taxMode ?? 'exclusive';
+    let vatAmt: number;
+    let total: number;
+    if (input.vatType === 'Vat' && taxMode === 'inclusive' && vatRate > 0) {
+      vatAmt = parseFloat((net * vatRate / (100 + vatRate)).toFixed(2));
+      total = parseFloat(net.toFixed(2));
+    } else {
+      vatAmt = parseFloat((net * (vatRate / 100)).toFixed(2));
+      total = parseFloat((net + vatAmt).toFixed(2));
+    }
+
     itemsGross += gross;
     itemsDiscount += disc;
     itemsVat += vatAmt;
-    
+
     lineItems.push({
       productId: product._id,
       productCode: item.productCode ?? product.code ?? '',
@@ -515,11 +526,26 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
   const freightCharge = input.freightCharge ?? 0;
   const lendAddLess = input.lendAddLess ?? 0;
   const roundOff = input.roundOff ?? 0;
-  
+
+  // When Vat: adjustments are inclusive of tax — total VAT includes VAT in adjustments; post net (VAT-excluded) to adjustment ledgers
+  const isVat = input.vatType !== 'NonVat';
+  const netAdjustments = otherCharges + freightCharge + lendAddLess + roundOff - otherDiscount;
+  const vatFromAdjustments = isVat && netAdjustments !== 0
+    ? parseFloat((netAdjustments * vatRatePct / (100 + vatRatePct)).toFixed(2))
+    : 0;
+  const totalVat = parseFloat((itemsVat + vatFromAdjustments).toFixed(2));
+  const netFactor = isVat ? 100 / (100 + vatRatePct) : 1;
+  const otherDiscountNet = parseFloat((otherDiscount * netFactor).toFixed(2));
+  const otherChargesNet = parseFloat((otherCharges * netFactor).toFixed(2));
+  const freightChargeNet = parseFloat((freightCharge * netFactor).toFixed(2));
+  const lendAddLessNet = parseFloat((lendAddLess * netFactor).toFixed(2));
+  const roundOffNet = parseFloat((roundOff * netFactor).toFixed(2));
+
   const taxableAmount = itemsGross - itemsDiscount;
-  const subTotal = taxableAmount + itemsVat;
+  // Inclusive: line total = net (amount includes VAT), so sum of line totals = taxableAmount. Exclusive: line total = net + vat, so subTotal = taxableAmount + itemsVat.
+  const subTotal = (input.taxMode === 'inclusive' && isVat) ? taxableAmount : (taxableAmount + itemsVat);
   const grandTotal = subTotal - otherDiscount + otherCharges + freightCharge + lendAddLess + roundOff;
-  
+
   const cashReceived = input.cashReceived ?? (input.paymentType === 'Cash' ? grandTotal : 0);
   const balance = grandTotal - cashReceived;
   const oldBalance = 0; // Could be fetched from customer account
@@ -549,7 +575,7 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
       grossAmount: itemsGross,
       discountAmount: itemsDiscount,
       taxableAmount,
-      vatAmount: itemsVat,
+      vatAmount: totalVat,
       otherDiscount,
       otherCharges,
       freightCharge,
@@ -626,20 +652,20 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
   } catch (err) {
     // Rollback: clean up any partially created records
     if (invoice) {
-      await SalesInvoiceItem.deleteMany({ invoiceId: invoice._id }).catch(() => {});
-      await InventoryTransaction.deleteMany({ referenceId: invoice._id, referenceType: 'SalesInvoice' }).catch(() => {});
-      await SalesInvoice.deleteOne({ _id: invoice._id }).catch(() => {});
+      await SalesInvoiceItem.deleteMany({ invoiceId: invoice._id }).catch(() => { });
+      await InventoryTransaction.deleteMany({ referenceId: invoice._id, referenceType: 'SalesInvoice' }).catch(() => { });
+      await SalesInvoice.deleteOne({ _id: invoice._id }).catch(() => { });
     }
     throw err;
   }
 
   // ── Create accounting entries ─────────────────────────────────────
-  console.log(`[B2C ${invoiceNo}] Accounting: itemsGross=${itemsGross}, itemsDiscount=${itemsDiscount}, itemsVat=${itemsVat}, otherDiscount=${otherDiscount}, otherCharges=${otherCharges}, freightCharge=${freightCharge}, lendAddLess=${lendAddLess}, roundOff=${roundOff}, grandTotal=${grandTotal}`);
+  console.log(`[B2C ${invoiceNo}] Accounting: itemsGross=${itemsGross}, itemsDiscount=${itemsDiscount}, itemsVat=${itemsVat}, totalVat=${totalVat}, otherDiscount=${otherDiscount}, otherCharges=${otherCharges}, freightCharge=${freightCharge}, lendAddLess=${lendAddLess}, roundOff=${roundOff}, grandTotal=${grandTotal}`);
 
-  const cashLedger = input.cashAccountId 
+  const cashLedger = input.cashAccountId
     ? await LedgerAccount.findById(input.cashAccountId)
     : await LedgerAccount.findOne({ companyId: input.companyId, type: 'Cash' });
-  
+
   const salesLedger = await findOrCreateSalesLedger(input.companyId);
   const vatLedger = await findOrCreateVatLedger(input.companyId);
   const customerLedger = input.customerId ? await LedgerAccount.findById(input.customerId) : null;
@@ -672,48 +698,48 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
         narration: `B2C ${invoiceNo} - Row Discounts`,
       });
     }
-    // Debit: Other Discount on Sales
+    // Debit: Other Discount on Sales (net = VAT-excluded when Vat)
     if (otherDiscountLedger && otherDiscount > 0) {
       voucherLines.push({
         ledgerAccountId: otherDiscountLedger._id.toString(),
-        debitAmount: otherDiscount,
+        debitAmount: otherDiscountNet,
         creditAmount: 0,
         narration: `B2C ${invoiceNo} - Other Discount`,
       });
     }
-    // Credit: Other Charges on Sales
+    // Credit: Other Charges on Sales (net when Vat)
     if (otherChargesLedger && otherCharges > 0) {
       voucherLines.push({
         ledgerAccountId: otherChargesLedger._id.toString(),
         debitAmount: 0,
-        creditAmount: otherCharges,
+        creditAmount: otherChargesNet,
         narration: `B2C ${invoiceNo} - Other Charges`,
       });
     }
-    // Credit: Freight Charges on Sales
+    // Credit: Freight Charges on Sales (net when Vat)
     if (freightChargesLedger && freightCharge > 0) {
       voucherLines.push({
         ledgerAccountId: freightChargesLedger._id.toString(),
         debitAmount: 0,
-        creditAmount: freightCharge,
+        creditAmount: freightChargeNet,
         narration: `B2C ${invoiceNo} - Freight Charges`,
       });
     }
-    // Credit: Travel Charges on Sales
+    // Credit: Travel Charges on Sales (net when Vat)
     if (travelChargesLedger && lendAddLess > 0) {
       voucherLines.push({
         ledgerAccountId: travelChargesLedger._id.toString(),
         debitAmount: 0,
-        creditAmount: lendAddLess,
+        creditAmount: lendAddLessNet,
         narration: `B2C ${invoiceNo} - Travel Charges`,
       });
     }
-    // Round Off on Sales (debit if negative, credit if positive)
+    // Round Off on Sales (net when Vat; debit if negative, credit if positive)
     if (roundOffLedger && Math.abs(roundOff) > 0.001) {
       voucherLines.push({
         ledgerAccountId: roundOffLedger._id.toString(),
-        debitAmount: roundOff < 0 ? Math.abs(roundOff) : 0,
-        creditAmount: roundOff > 0 ? roundOff : 0,
+        debitAmount: roundOffNet < 0 ? Math.abs(roundOffNet) : 0,
+        creditAmount: roundOffNet > 0 ? roundOffNet : 0,
         narration: `B2C ${invoiceNo} - Round Off`,
       });
     }
@@ -742,17 +768,17 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
       });
     }
 
-    // Credit: VAT A/C
-    if (vatLedger && itemsVat > 0) {
+    // Credit: VAT A/C (total output VAT = items + VAT in adjustments when Vat)
+    if (vatLedger && totalVat > 0) {
       voucherLines.push({
         ledgerAccountId: vatLedger._id.toString(),
         debitAmount: 0,
-        creditAmount: itemsVat,
+        creditAmount: totalVat,
         narration: `B2C ${invoiceNo}`,
       });
     }
 
-    // Discount, Charges & Round-off entries
+    // Discount, Charges & Round-off entries (net amounts when Vat)
     pushSpecialLines();
 
     if (isCashPayment) {
@@ -832,17 +858,17 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
       });
     }
 
-    // Credit: VAT A/C
-    if (vatLedger && itemsVat > 0) {
+    // Credit: VAT A/C (total output VAT = items + VAT in adjustments when Vat)
+    if (vatLedger && totalVat > 0) {
       voucherLines.push({
         ledgerAccountId: vatLedger._id.toString(),
         debitAmount: 0,
-        creditAmount: itemsVat,
+        creditAmount: totalVat,
         narration: `B2C ${invoiceNo}`,
       });
     }
 
-    // Discount, Charges & Round-off entries
+    // Discount, Charges & Round-off entries (net amounts when Vat)
     pushSpecialLines();
   }
 
@@ -884,6 +910,26 @@ export async function createB2CSale(input: CreateB2CSaleInput): Promise<{ invoic
     console.warn(`[B2C ${invoiceNo}] Insufficient voucher lines (${voucherLines.length}). Cash ledger: ${cashLedger ? 'found' : 'MISSING'}, Sales ledger: ${salesLedger ? 'found' : 'MISSING'}`);
   }
 
+  // 5. Create bill reference ("New Ref" — receivable from customer)
+  if (input.customerId && grandTotal > 0) {
+    try {
+      await billReferenceService.createNewRef({
+        companyId: input.companyId,
+        financialYearId: input.financialYearId,
+        ledgerAccountId: input.customerId,
+        billNumber: invoiceNo,
+        referenceType: 'SalesInvoice',
+        referenceId: invoice!._id.toString(),
+        date: saleDate,
+        amount: grandTotal,
+        drCr: 'Dr',
+        narration: `B2C Sale ${invoiceNo}`,
+      });
+    } catch (err) {
+      console.error(`[B2C ${invoiceNo}] Bill reference creation failed:`, err);
+    }
+  }
+
   return {
     invoiceId: invoice!._id.toString(),
     invoiceNo: invoice!.invoiceNo,
@@ -898,7 +944,7 @@ export async function updateB2CSale(
 ): Promise<{ invoiceId: string; invoiceNo: string } | null> {
   const existing = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: 'B2C' });
   if (!existing) return null;
-  
+
   // Recalculate with new data
   const company = await Company.findById(companyId);
   if (!company) throw new AppError('Company not found', 404);
@@ -949,11 +995,13 @@ export async function updateB2CSale(
   await SalesInvoiceItem.deleteMany({ invoiceId });
 
   let itemsGross = 0, itemsDiscount = 0, itemsVat = 0;
-  
+
+  const taxModeUpdate = input.taxMode ?? 'exclusive';
+
   for (const item of items) {
     const product = await Product.findById(item.productId).lean();
     if (!product) continue;
-    
+
     const qty = item.quantity;
     const price = item.unitPrice;
     const gross = qty * price;
@@ -961,13 +1009,20 @@ export async function updateB2CSale(
     const disc = item.discount ?? (gross * discPct / 100);
     const net = gross - disc;
     const vatRate = input.vatType === 'NonVat' ? 0 : (item.vatRate ?? vatRatePct);
-    const vatAmt = net * (vatRate / 100);
-    const total = net + vatAmt;
-    
+    let vatAmt: number;
+    let total: number;
+    if (input.vatType === 'Vat' && taxModeUpdate === 'inclusive' && vatRate > 0) {
+      vatAmt = parseFloat((net * vatRate / (100 + vatRate)).toFixed(2));
+      total = parseFloat(net.toFixed(2));
+    } else {
+      vatAmt = parseFloat((net * (vatRate / 100)).toFixed(2));
+      total = parseFloat((net + vatAmt).toFixed(2));
+    }
+
     itemsGross += gross;
     itemsDiscount += disc;
     itemsVat += vatAmt;
-    
+
     await SalesInvoiceItem.create({
       invoiceId: existing._id,
       productId: product._id,
@@ -988,7 +1043,7 @@ export async function updateB2CSale(
       totalAmount: total,
       costPriceAtSale: product.purchasePrice ?? 0,
     });
-    
+
     // For multi-unit sales, reduce stock by conversion (pcs inside) instead of line qty
     let stockQtyOut = qty;
     if (item.multiUnitId && product.multiUnits) {
@@ -1018,9 +1073,24 @@ export async function updateB2CSale(
   const freightCharge = input.freightCharge ?? existing.freightCharge ?? 0;
   const lendAddLess = input.lendAddLess ?? existing.lendAddLess ?? 0;
   const roundOff = input.roundOff ?? existing.roundOff ?? 0;
-  
+
+  // When Vat: adjustments are inclusive — totalVat and net amounts for ledgers
+  const isVatUpdate = input.vatType !== 'NonVat';
+  const netAdjustmentsUpdate = otherCharges + freightCharge + lendAddLess + roundOff - otherDiscount;
+  const vatFromAdjustmentsUpdate = isVatUpdate && netAdjustmentsUpdate !== 0
+    ? parseFloat((netAdjustmentsUpdate * vatRatePct / (100 + vatRatePct)).toFixed(2))
+    : 0;
+  const totalVatUpdate = parseFloat((itemsVat + vatFromAdjustmentsUpdate).toFixed(2));
+  const netFactorUpdate = isVatUpdate ? 100 / (100 + vatRatePct) : 1;
+  const otherDiscountNetUpdate = parseFloat((otherDiscount * netFactorUpdate).toFixed(2));
+  const otherChargesNetUpdate = parseFloat((otherCharges * netFactorUpdate).toFixed(2));
+  const freightChargeNetUpdate = parseFloat((freightCharge * netFactorUpdate).toFixed(2));
+  const lendAddLessNetUpdate = parseFloat((lendAddLess * netFactorUpdate).toFixed(2));
+  const roundOffNetUpdate = parseFloat((roundOff * netFactorUpdate).toFixed(2));
+
   const taxableAmount = itemsGross - itemsDiscount;
-  const grandTotal = taxableAmount + itemsVat - otherDiscount + otherCharges + freightCharge + lendAddLess + roundOff;
+  const subTotalUpdate = (input.taxMode === 'inclusive' && isVatUpdate) ? taxableAmount : (taxableAmount + itemsVat);
+  const grandTotal = subTotalUpdate - otherDiscount + otherCharges + freightCharge + lendAddLess + roundOff;
   const cashReceived = input.cashReceived ?? (input.paymentType === 'Cash' ? grandTotal : 0);
 
   // Delete old voucher if exists
@@ -1052,7 +1122,7 @@ export async function updateB2CSale(
         grossAmount: itemsGross,
         discountAmount: itemsDiscount,
         taxableAmount,
-        vatAmount: itemsVat,
+        vatAmount: totalVatUpdate,
         otherDiscount,
         otherCharges,
         freightCharge,
@@ -1075,7 +1145,7 @@ export async function updateB2CSale(
     }
   );
 
-  // ── Recreate accounting entries ─────────────────────────────────────
+  // ── Recreate accounting entries (totalVat + net adjustment amounts when Vat) ─────────────────────────────────────
   const cashLedger = input.cashAccountId
     ? await LedgerAccount.findById(input.cashAccountId)
     : await LedgerAccount.findOne({ companyId, type: 'Cash' });
@@ -1100,7 +1170,7 @@ export async function updateB2CSale(
 
   const voucherLines: Array<{ ledgerAccountId: string; debitAmount: number; creditAmount: number; narration?: string }> = [];
 
-  /** Helper: push the shared credit/debit lines for discounts, charges, round-off */
+  /** Helper: push the shared credit/debit lines for discounts, charges, round-off (net amounts when Vat) */
   const pushSpecialLines2 = () => {
     if (discountOnSalesLedger2 && itemsDiscount > 0) {
       voucherLines.push({
@@ -1112,36 +1182,36 @@ export async function updateB2CSale(
     if (otherDiscountLedger2 && otherDiscount > 0) {
       voucherLines.push({
         ledgerAccountId: otherDiscountLedger2._id.toString(),
-        debitAmount: otherDiscount, creditAmount: 0,
+        debitAmount: otherDiscountNetUpdate, creditAmount: 0,
         narration: `B2C ${invNo} - Other Discount`,
       });
     }
     if (otherChargesLedger2 && otherCharges > 0) {
       voucherLines.push({
         ledgerAccountId: otherChargesLedger2._id.toString(),
-        debitAmount: 0, creditAmount: otherCharges,
+        debitAmount: 0, creditAmount: otherChargesNetUpdate,
         narration: `B2C ${invNo} - Other Charges`,
       });
     }
     if (freightChargesLedger2 && freightCharge > 0) {
       voucherLines.push({
         ledgerAccountId: freightChargesLedger2._id.toString(),
-        debitAmount: 0, creditAmount: freightCharge,
+        debitAmount: 0, creditAmount: freightChargeNetUpdate,
         narration: `B2C ${invNo} - Freight Charges`,
       });
     }
     if (travelChargesLedger2 && lendAddLess > 0) {
       voucherLines.push({
         ledgerAccountId: travelChargesLedger2._id.toString(),
-        debitAmount: 0, creditAmount: lendAddLess,
+        debitAmount: 0, creditAmount: lendAddLessNetUpdate,
         narration: `B2C ${invNo} - Travel Charges`,
       });
     }
     if (roundOffLedger2 && Math.abs(roundOff) > 0.001) {
       voucherLines.push({
         ledgerAccountId: roundOffLedger2._id.toString(),
-        debitAmount: roundOff < 0 ? Math.abs(roundOff) : 0,
-        creditAmount: roundOff > 0 ? roundOff : 0,
+        debitAmount: roundOffNetUpdate < 0 ? Math.abs(roundOffNetUpdate) : 0,
+        creditAmount: roundOffNetUpdate > 0 ? roundOffNetUpdate : 0,
         narration: `B2C ${invNo} - Round Off`,
       });
     }
@@ -1170,17 +1240,17 @@ export async function updateB2CSale(
       });
     }
 
-    // Credit: VAT A/C
-    if (vatLedger && itemsVat > 0) {
+    // Credit: VAT A/C (total output VAT when Vat)
+    if (vatLedger && totalVatUpdate > 0) {
       voucherLines.push({
         ledgerAccountId: vatLedger._id.toString(),
         debitAmount: 0,
-        creditAmount: itemsVat,
+        creditAmount: totalVatUpdate,
         narration: `B2C ${invNo}`,
       });
     }
 
-    // Discount, Charges & Round-off entries
+    // Discount, Charges & Round-off entries (net when Vat)
     pushSpecialLines2();
 
     if (isCashPayment) {
@@ -1254,16 +1324,16 @@ export async function updateB2CSale(
       });
     }
 
-    if (vatLedger && itemsVat > 0) {
+    if (vatLedger && totalVatUpdate > 0) {
       voucherLines.push({
         ledgerAccountId: vatLedger._id.toString(),
         debitAmount: 0,
-        creditAmount: itemsVat,
+        creditAmount: totalVatUpdate,
         narration: `B2C ${invNo}`,
       });
     }
 
-    // Discount, Charges & Round-off entries
+    // Discount, Charges & Round-off entries (net when Vat)
     pushSpecialLines2();
   }
 
@@ -1297,19 +1367,39 @@ export async function updateB2CSale(
     console.warn(`[B2C ${invNo} update] Insufficient voucher lines (${voucherLines.length}). Cash: ${cashLedger ? 'found' : 'MISSING'}, Sales: ${salesLedger ? 'found' : 'MISSING'}`);
   }
 
+  // Update bill reference ("New Ref" — receivable from customer)
+  if (input.customerId && grandTotal > 0) {
+    try {
+      await billReferenceService.createNewRef({
+        companyId,
+        financialYearId: input.financialYearId ?? existing.financialYearId.toString(),
+        ledgerAccountId: input.customerId,
+        billNumber: existing.invoiceNo,
+        referenceType: 'SalesInvoice',
+        referenceId: invoiceId,
+        date: saleDate,
+        amount: grandTotal,
+        drCr: 'Dr',
+        narration: `B2C Sale ${existing.invoiceNo} (updated)`,
+      });
+    } catch (err) {
+      console.error(`[B2C ${invNo} update] Bill reference update failed:`, err);
+    }
+  }
+
   return { invoiceId, invoiceNo: existing.invoiceNo };
 }
 
 export async function deleteB2CSale(invoiceId: string, companyId: string): Promise<boolean> {
   const invoice = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: 'B2C' });
   if (!invoice) return false;
-  
+
   // Delete line items
   await SalesInvoiceItem.deleteMany({ invoiceId });
-  
+
   // Reverse inventory transactions
   await InventoryTransaction.deleteMany({ referenceId: invoiceId, referenceType: 'SalesInvoice' });
-  
+
   // Reverse accounting entries - delete voucher and associated ledger entries
   if (invoice.voucherId) {
     try {
@@ -1320,9 +1410,12 @@ export async function deleteB2CSale(invoiceId: string, companyId: string): Promi
       console.error(`[B2C Delete] Failed to reverse accounting entries for voucher ${invoice.voucherId}:`, (e as Error).message || e);
     }
   }
-  
+
+  // Delete bill references
+  await billReferenceService.deleteRefsBySource('SalesInvoice', invoiceId);
+
   await SalesInvoice.deleteOne({ _id: invoiceId });
-  
+
   return true;
 }
 
@@ -1332,7 +1425,7 @@ export async function listB2CInvoices(
   opts: { search?: string; fromDate?: string; toDate?: string; page?: number; limit?: number } = {}
 ) {
   const filter: Record<string, unknown> = { companyId, financialYearId, type: 'B2C' };
-  
+
   if (opts.search) {
     filter.$or = [
       { invoiceNo: new RegExp(opts.search, 'i') },
@@ -1348,7 +1441,7 @@ export async function listB2CInvoices(
   const total = await SalesInvoice.countDocuments(filter);
   const page = opts.page ?? 1;
   const limit = Math.min(opts.limit ?? 20, 100);
-  
+
   const invoices = await SalesInvoice.find(filter)
     .populate('customerId', 'name code')
     .sort({ createdAt: -1 })
@@ -1366,7 +1459,7 @@ export async function getB2CInvoice(invoiceId: string, companyId: string) {
     .populate('cashAccountId', 'name code')
     .lean();
   if (!invoice) return null;
-  
+
   const items = await SalesInvoiceItem.find({ invoiceId })
     .populate({
       path: 'productId',
@@ -1377,7 +1470,7 @@ export async function getB2CInvoice(invoiceId: string, companyId: string) {
       ]
     })
     .lean();
-  
+
   return { ...invoice, items };
 }
 
@@ -1441,4 +1534,363 @@ export async function getProductCustomerHistory(
       total: item.totalAmount,
     };
   }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 5);
+}
+
+// ─── Sales Return ────────────────────────────────────────────────────
+
+export type SalesReturnType = 'OnAccount' | 'ByRef';
+
+export interface SalesReturnLineItem {
+  productId: string;
+  productCode?: string;
+  imei?: string;
+  description?: string;
+  quantity: number;
+  unitPrice: number;
+  discountPercent?: number;
+  discount?: number;
+  unitId?: string;
+  unitName?: string;
+  multiUnitId?: string;
+  batchNumber?: string;
+}
+
+export interface CreateSalesReturnInput {
+  companyId: string;
+  financialYearId: string;
+  date?: string;
+  returnType: SalesReturnType;
+  originalInvoiceId?: string; // required when returnType === 'ByRef'
+  customerId?: string;
+  customerName?: string;
+  customerAddress?: string;
+  customerPhone?: string;
+  cashAccountId?: string; // for cash refund
+  vatType?: 'Vat' | 'NonVat';
+  taxMode?: 'inclusive' | 'exclusive';
+  items: SalesReturnLineItem[];
+  otherDiscount?: number;
+  otherCharges?: number;
+  roundOff?: number;
+  narration?: string;
+  createdBy?: string;
+}
+
+export async function getNextReturnInvoiceNo(companyId: string, financialYearId: string): Promise<string> {
+  const prefix = 'SR';
+  const last = await SalesInvoice.findOne({ companyId, financialYearId, type: 'Return' })
+    .sort({ invoiceNo: -1 })
+    .lean();
+  if (!last?.invoiceNo) return `${prefix}-000001`;
+  const match = last.invoiceNo.match(/-(\d+)$/);
+  const num = match ? parseInt(match[1], 10) + 1 : 1;
+  return `${prefix}-${num.toString().padStart(6, '0')}`;
+}
+
+export async function createSalesReturn(input: CreateSalesReturnInput): Promise<{ invoiceId: string; invoiceNo: string }> {
+  const company = await Company.findById(input.companyId);
+  if (!company) throw new AppError('Company not found', 404);
+  if (input.returnType === 'ByRef' && !input.originalInvoiceId) {
+    throw new AppError('Original invoice is required when return type is By Ref', 400);
+  }
+
+  const vatRatePct = input.vatType === 'NonVat' ? 0 : (company.vatConfig?.standardRate ?? 5);
+  const returnDate = input.date ? new Date(input.date) : new Date();
+
+  let itemsGross = 0;
+  let itemsDiscount = 0;
+  let itemsVat = 0;
+
+  const lineItems: Array<{
+    productId: mongoose.Types.ObjectId;
+    productCode: string;
+    imei?: string;
+    description: string;
+    quantity: number;
+    unitPrice: number;
+    grossAmount: number;
+    discountPercent: number;
+    discount: number;
+    netAmount: number;
+    vatRate: number;
+    vatAmount: number;
+    totalAmount: number;
+    costPriceAtSale: number;
+    unitId?: string;
+    unitName?: string;
+    multiUnitId?: string;
+  }> = [];
+
+  for (const item of input.items) {
+    const product = await Product.findById(item.productId).lean();
+    if (!product || product.companyId.toString() !== input.companyId) {
+      throw new AppError(`Product not found: ${item.productId}`, 404);
+    }
+    const qty = item.quantity;
+    const price = item.unitPrice;
+    const gross = qty * price;
+    const discPct = item.discountPercent ?? 0;
+    const disc = item.discount ?? (gross * discPct / 100);
+    const net = gross - disc;
+    const vatRate = input.vatType === 'NonVat' ? 0 : (vatRatePct);
+    const taxMode = input.taxMode ?? 'exclusive';
+    let vatAmt: number;
+    let total: number;
+    if (input.vatType === 'Vat' && taxMode === 'inclusive' && vatRate > 0) {
+      vatAmt = parseFloat((net * vatRate / (100 + vatRate)).toFixed(2));
+      total = parseFloat(net.toFixed(2));
+    } else {
+      vatAmt = parseFloat((net * (vatRate / 100)).toFixed(2));
+      total = parseFloat((net + vatAmt).toFixed(2));
+    }
+    itemsGross += gross;
+    itemsDiscount += disc;
+    itemsVat += vatAmt;
+
+    lineItems.push({
+      productId: product._id,
+      productCode: item.productCode ?? product.code ?? '',
+      imei: item.imei ?? '',
+      description: item.description ?? product.name,
+      quantity: qty,
+      unitPrice: price,
+      grossAmount: gross,
+      discountPercent: discPct,
+      discount: disc,
+      netAmount: net,
+      vatRate,
+      vatAmount: vatAmt,
+      totalAmount: total,
+      costPriceAtSale: product.purchasePrice ?? 0,
+      unitId: item.unitId,
+      unitName: item.unitName,
+      multiUnitId: item.multiUnitId,
+    });
+  }
+
+  const otherDiscount = input.otherDiscount ?? 0;
+  const otherCharges = input.otherCharges ?? 0;
+  const roundOff = input.roundOff ?? 0;
+  const isVat = input.vatType !== 'NonVat';
+  const netAdjustments = otherCharges + roundOff - otherDiscount;
+  const vatFromAdjustments = isVat && netAdjustments !== 0
+    ? parseFloat((netAdjustments * vatRatePct / (100 + vatRatePct)).toFixed(2))
+    : 0;
+  const totalVat = parseFloat((itemsVat + vatFromAdjustments).toFixed(2));
+  const taxableAmount = itemsGross - itemsDiscount;
+  const subTotal = (input.taxMode === 'inclusive' && isVat) ? taxableAmount : (taxableAmount + itemsVat);
+  const grandTotal = subTotal - otherDiscount + otherCharges + roundOff;
+
+  const invoiceNo = await getNextReturnInvoiceNo(input.companyId, input.financialYearId);
+
+  const invoiceDoc = await SalesInvoice.create({
+    companyId: input.companyId,
+    financialYearId: input.financialYearId,
+    invoiceNo,
+    date: returnDate,
+    time: returnDate.toTimeString().slice(0, 8),
+    type: 'Return',
+    customerId: input.customerId,
+    customerName: input.customerName ?? 'Walk-in',
+    customerAddress: input.customerAddress,
+    customerPhone: input.customerPhone,
+    cashAccountId: input.cashAccountId,
+    rateType: 'Retail',
+    paymentType: input.cashAccountId ? 'Cash' : (input.customerId ? 'Credit' : 'Cash'),
+    vatType: input.vatType ?? 'Vat',
+    taxMode: input.taxMode ?? 'exclusive',
+    grossAmount: itemsGross,
+    discountAmount: itemsDiscount,
+    taxableAmount,
+    vatAmount: totalVat,
+    otherDiscount,
+    otherCharges,
+    freightCharge: 0,
+    lendAddLess: 0,
+    roundOff,
+    totalAmount: grandTotal,
+    cashReceived: 0,
+    balance: 0,
+    oldBalance: 0,
+    netBalance: 0,
+    paymentDetails: [],
+    narration: input.narration ?? (input.returnType === 'ByRef' && input.originalInvoiceId ? `Sales Return against ${input.originalInvoiceId}` : 'Sales Return'),
+    status: 'Final',
+    originalInvoiceId: input.returnType === 'ByRef' ? input.originalInvoiceId : undefined,
+    createdBy: input.createdBy,
+  });
+
+  const invoiceId = invoiceDoc._id;
+
+  for (const line of lineItems) {
+    await SalesInvoiceItem.create({
+      invoiceId,
+      productId: line.productId,
+      productCode: line.productCode,
+      imei: line.imei,
+      description: line.description,
+      quantity: line.quantity,
+      unitPrice: line.unitPrice,
+      grossAmount: line.grossAmount,
+      discountPercent: line.discountPercent,
+      discount: line.discount,
+      netAmount: line.netAmount,
+      vatRate: line.vatRate,
+      vatAmount: line.vatAmount,
+      totalAmount: line.totalAmount,
+      costPriceAtSale: line.costPriceAtSale,
+      unitId: line.unitId,
+      unitName: line.unitName,
+      multiUnitId: line.multiUnitId,
+    });
+  }
+
+  // Inventory: add stock back (SalesReturn = quantityIn)
+  for (const line of lineItems) {
+    let stockQtyIn = line.quantity;
+    if (line.multiUnitId) {
+      const prod = await Product.findById(line.productId).lean();
+      if (prod?.multiUnits) {
+        const mu = prod.multiUnits.find((m: { multiUnitId?: string }) => m.multiUnitId === line.multiUnitId);
+        if (mu && (mu as { conversion?: number }).conversion && (mu as { conversion: number }).conversion > 0) {
+          stockQtyIn = line.quantity * (mu as { conversion: number }).conversion;
+        }
+      }
+    }
+
+    await InventoryTransaction.create({
+      companyId: input.companyId,
+      financialYearId: input.financialYearId,
+      productId: line.productId,
+      date: returnDate,
+      type: 'SalesReturn',
+      quantityIn: stockQtyIn,
+      quantityOut: 0,
+      costPrice: line.costPriceAtSale,
+      referenceType: 'SalesInvoice',
+      referenceId: invoiceId,
+      narration: `Sales Return ${invoiceNo}`,
+      createdBy: input.createdBy,
+    });
+  }
+
+  // Ledger: Debit Sales Return, Credit Customer (on account) or Credit Cash (cash refund)
+  const salesReturnLedger = await findOrCreateSpecialLedger(input.companyId, 'Sales Returns', 'Expense', 'Expense');
+  const vatLedger = isVat ? await findOrCreateVatLedger(input.companyId) : null;
+  const customerLedger = input.customerId ? await LedgerAccount.findById(input.customerId) : null;
+  const cashLedger = input.cashAccountId ? await LedgerAccount.findById(input.cashAccountId) : null;
+  const creditLedger = cashLedger || customerLedger;
+
+  if (creditLedger) {
+    const voucherLines: Array<{ ledgerAccountId: string; debitAmount: number; creditAmount: number; narration?: string }> = [];
+    voucherLines.push({
+      ledgerAccountId: salesReturnLedger._id.toString(),
+      debitAmount: grandTotal,
+      creditAmount: 0,
+      narration: `Sales Return ${invoiceNo}`,
+    });
+    voucherLines.push({
+      ledgerAccountId: creditLedger._id.toString(),
+      debitAmount: 0,
+      creditAmount: grandTotal,
+      narration: cashLedger ? `Sales Return ${invoiceNo} - Cash Refund` : `Sales Return ${invoiceNo} - On Account`,
+    });
+    if (vatLedger && totalVat > 0) {
+      voucherLines.push({
+        ledgerAccountId: vatLedger._id.toString(),
+        debitAmount: totalVat,
+        creditAmount: 0,
+        narration: `Sales Return ${invoiceNo} - VAT`,
+      });
+    }
+    const totalDebit = voucherLines.reduce((s, l) => s + l.debitAmount, 0);
+    const totalCredit = voucherLines.reduce((s, l) => s + l.creditAmount, 0);
+    const diff = Math.abs(totalDebit - totalCredit);
+    if (diff > 0.01) {
+      if (totalDebit > totalCredit) {
+        voucherLines[voucherLines.length - 1].debitAmount = (voucherLines[voucherLines.length - 1].debitAmount || 0) - diff;
+      } else {
+        voucherLines[voucherLines.length - 1].creditAmount = (voucherLines[voucherLines.length - 1].creditAmount || 0) - diff;
+      }
+    }
+    const v = await voucherService.createAndPost({
+      companyId: input.companyId,
+      financialYearId: input.financialYearId,
+      voucherType: 'Journal',
+      date: returnDate,
+      lines: voucherLines,
+      narration: `Sales Return ${invoiceNo}`,
+      createdBy: input.createdBy,
+    });
+    await SalesInvoice.updateOne({ _id: invoiceId }, { voucherId: v._id });
+  }
+
+  return { invoiceId: invoiceId.toString(), invoiceNo };
+}
+
+export async function searchSalesReturnByInvoiceNo(companyId: string, invoiceNo: string) {
+  const invoice = await SalesInvoice.findOne({
+    companyId,
+    type: 'Return',
+    invoiceNo: new RegExp(invoiceNo.trim(), 'i'),
+  }).lean();
+  if (!invoice) return null;
+  return getSalesReturn(invoice._id.toString(), companyId);
+}
+
+export async function getSalesReturn(invoiceId: string, companyId: string) {
+  const invoice = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: 'Return' }).lean();
+  if (!invoice) return null;
+  const items = await SalesInvoiceItem.find({ invoiceId }).lean();
+  return {
+    _id: invoice._id,
+    invoiceNo: invoice.invoiceNo,
+    date: invoice.date,
+    returnType: invoice.originalInvoiceId ? 'ByRef' : 'OnAccount',
+    originalInvoiceId: invoice.originalInvoiceId ? String(invoice.originalInvoiceId) : undefined,
+    customerId: invoice.customerId,
+    customerName: invoice.customerName,
+    customerAddress: invoice.customerAddress,
+    cashAccountId: invoice.cashAccountId,
+    vatType: invoice.vatType,
+    taxMode: invoice.taxMode,
+    items: items.map((i) => ({
+      _id: i._id,
+      productId: i.productId,
+      productCode: i.productCode,
+      imei: i.imei,
+      description: i.description,
+      quantity: i.quantity,
+      unitPrice: i.unitPrice,
+      discount: i.discount,
+      totalAmount: i.totalAmount,
+      unitName: i.unitName,
+    })),
+    otherDiscount: invoice.otherDiscount,
+    otherCharges: invoice.otherCharges,
+    roundOff: invoice.roundOff,
+    totalAmount: invoice.totalAmount,
+    narration: invoice.narration,
+  };
+}
+
+export async function deleteSalesReturn(invoiceId: string, companyId: string): Promise<boolean> {
+  const invoice = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: 'Return' });
+  if (!invoice) return false;
+
+  await SalesInvoiceItem.deleteMany({ invoiceId });
+  await InventoryTransaction.deleteMany({ referenceId: invoiceId, referenceType: 'SalesInvoice' });
+
+  if (invoice.voucherId) {
+    try {
+      const { LedgerEntry } = await import('../models/LedgerEntry');
+      await LedgerEntry.deleteMany({ voucherId: invoice.voucherId });
+      await Voucher.deleteOne({ _id: invoice.voucherId });
+    } catch (e) {
+      console.error(`[Sales Return Delete] Failed to reverse voucher ${invoice.voucherId}:`, (e as Error).message || e);
+    }
+  }
+
+  await SalesInvoice.deleteOne({ _id: invoiceId });
+  return true;
 }
