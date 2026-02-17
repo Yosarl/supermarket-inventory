@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:web": "vite build",
     "preview": "vite preview",
     "electron:dev": "vite",
     "build:backend": "node -e \"const{execSync}=require('child_process');try{execSync('npm run build',{stdio:'inherit',cwd:require('path').resolve(__dirname,'..','backend')})}catch(e){console.log('[build] Backend compiled with type warnings (JS emitted ok)')}\"",

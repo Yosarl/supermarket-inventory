@@ -1,0 +1,20 @@
+# Render Blueprint: deploy frontend as a static site
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: supermarket-inventory-frontend
+    runtime: static
+    # Run build from repo root so "build:web" is always found (frontend/package.json)
+    buildCommand: cd frontend && npm install && npm run build:web
+    staticPublishPath: frontend/dist
+    envVars:
+      - key: VITE_BASE_PATH
+        value: /
+      # Set when your backend is deployed (e.g. https://your-backend.onrender.com/api)
+      - key: VITE_API_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
