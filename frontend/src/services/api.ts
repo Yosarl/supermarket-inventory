@@ -5,9 +5,12 @@ import axios from 'axios';
 // In the packaged Electron app there is no proxy, so we hit the backend directly.
 const isElectronProd = !import.meta.env.DEV && typeof window !== 'undefined' && !!(window as unknown as Record<string, unknown>).electronAPI;
 
+// When using a remote API (e.g. Render), use a longer timeout for cold starts (~30–60s)
+const isRemoteApi = !!import.meta.env.VITE_API_URL;
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || (isElectronProd ? 'http://localhost:5000/api' : '/api'),
   headers: { 'Content-Type': 'application/json' },
+  timeout: isRemoteApi ? 60000 : 0,
 });
 
 api.interceptors.request.use((config) => {

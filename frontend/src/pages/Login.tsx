@@ -51,7 +51,10 @@ export default function Login() {
       }
       navigate('/');
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Login failed';
+      const ax = err as { response?: { data?: { message?: string }; status?: number }; message?: string; code?: string };
+      const msg = ax?.response?.data?.message ?? (ax?.code === 'ECONNABORTED' || ax?.message === 'Network Error'
+        ? 'Request timed out or server unreachable. If the backend was idle, wait ~1 minute and try again.'
+        : 'Login failed');
       setError(msg);
     }
   };
