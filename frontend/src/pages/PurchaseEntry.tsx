@@ -11,6 +11,7 @@ import {
   createFilterOptions,
   FormControlLabel,
   Radio,
+  RadioGroup,
   Table,
   TableBody,
   TableCell,
@@ -1804,48 +1805,31 @@ export default function PurchaseEntry() {
     <Box onClick={handlePageClick} sx={{ p: 0.5, bgcolor: '#ffffff', minHeight: '100vh', height: '100%', width: '100%', maxWidth: 1600, mx: 'auto', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', '& .MuiInputLabel-root': { fontWeight: 600, color: '#1e293b' }, ...numberInputStyle }}>
 
 
-      {/* Purchase Entry Card */}
-      <Paper elevation={0} sx={{ p: 1, mb: 0.5, bgcolor: 'white', borderRadius: 1, border: '2px solid #000000' }}>
-        <Grid container spacing={1} alignItems="center">
-          <Grid item xs={6} sm={4} md={2}>
-            <TextField
-              label="Invoice No"
-              size="small"
-              value={invoiceNo}
-              onChange={(e) => setInvoiceNo(e.target.value)}
-              fullWidth
-              InputProps={{ readOnly: true }}
-              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1 }, '& .MuiInputLabel-root': { fontWeight: 600 } }}
-            />
+      {/* Purchase Entry Card - B2C style header */}
+      <Paper elevation={0} sx={{ px: 2, py: 1.5, mb: 1, borderRadius: 2, bgcolor: 'white', border: '1px solid #e0e7ef' }}>
+        <Grid container spacing={1.5} alignItems="center">
+          {/* Entry No - badge style (like B2C) */}
+          <Grid item xs={6} sm={3} md={1.8} lg={1.3}>
+            <Box sx={{ bgcolor: '#0f766e', borderRadius: 1.5, px: 1.5, py: 0.6, textAlign: 'center' }}>
+              <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.65rem', fontWeight: 500, lineHeight: 1, letterSpacing: 0.5 }}>ENTRY NO</Typography>
+              <Typography sx={{ color: 'white', fontWeight: 800, fontSize: '0.9rem', lineHeight: 1.3 }}>{invoiceNo}</Typography>
+            </Box>
           </Grid>
-          <Grid item xs={6} sm={4} md={2}>
-            <DateInput label="Date" value={date} onChange={setDate} />
+          <Grid item xs={6} sm={3} md={2} lg={1.7}>
+            <DateInput label="Date" value={date} onChange={setDate} size="small" />
           </Grid>
-          <Grid item xs={6} sm={4} md={2}>
+          <Grid item xs={6} sm={3} md={2} lg={1.8}>
             <TextField
               label="Supplier Inv No"
               size="small"
               value={supplierInvNo}
               onChange={(e) => setSupplierInvNo(e.target.value)}
               fullWidth
-              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1 }, '& .MuiInputLabel-root': { fontWeight: 600 } }}
+              InputLabelProps={{ shrink: true }}
+              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
             />
           </Grid>
-          <Grid item xs={6} sm={4} md={2}>
-            <TextField
-              select
-              label="Payment"
-              size="small"
-              value={paymentType}
-              onChange={(e) => setPaymentType(e.target.value as 'Cash' | 'Credit')}
-              fullWidth
-              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1 }, '& .MuiInputLabel-root': { fontWeight: 600 } }}
-            >
-              <MenuItem value="Cash">Cash</MenuItem>
-              <MenuItem value="Credit">Credit</MenuItem>
-            </TextField>
-          </Grid>
-          <Grid item xs={6} sm={4} md={2}>
+          <Grid item xs={6} sm={6} md={2.5} lg={2.2}>
             <Autocomplete
               size="small"
               options={supplierCashOptions}
@@ -1895,28 +1879,25 @@ export default function PurchaseEntry() {
                 <TextField
                   {...params}
                   label="Cash/ Supplier AC"
+                  InputLabelProps={{ shrink: true }}
                   inputRef={supplierAcRef}
                   autoFocus
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       const typed = (e.target as HTMLInputElement).value.trim();
-                      // If a ledger is already selected (supplierId is set), move to grid
                       if (supplierId) {
                         e.preventDefault();
                         const firstLine = lines[0];
                         if (firstLine) setTimeout(() => imeiInputRefs.current[firstLine.id]?.focus(), 50);
                         return;
                       }
-                      // If field is empty and no selection, don't move
                       if (!typed) {
                         e.preventDefault();
                         return;
                       }
-                      // Check if typed name exists in suppliers or cash accounts
                       const existsInSuppliers = suppliers.find((s) => s.name.toLowerCase() === typed.toLowerCase());
                       const existsInCash = cashAccounts.find((c) => c.name.toLowerCase() === typed.toLowerCase());
                       if (existsInSuppliers || existsInCash) {
-                        // Found — select it and move to IMEI in grid
                         const match = existsInSuppliers || existsInCash;
                         if (match) {
                           setSupplierId(match._id);
@@ -1926,7 +1907,6 @@ export default function PurchaseEntry() {
                         const firstLine = lines[0];
                         if (firstLine) setTimeout(() => imeiInputRefs.current[firstLine.id]?.focus(), 50);
                       } else {
-                        // Not found — navigate to create
                         e.preventDefault();
                         e.stopPropagation();
                         setPendingSupplierName(typed);
@@ -1934,55 +1914,82 @@ export default function PurchaseEntry() {
                       }
                     }
                   }}
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1 }, '& .MuiInputLabel-root': { fontWeight: 600 } }}
+                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }}
                 />
               )}
             />
           </Grid>
-          <Grid item xs={6} sm={4} md={2}>
+          <Grid item xs={6} sm={6} md={2.5} lg={2.2}>
             <TextField
               label="Supplier Name"
               size="small"
               value={supplierAddress}
               onChange={(e) => setSupplierAddress(e.target.value)}
               fullWidth
-              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1 }, '& .MuiInputLabel-root': { fontWeight: 600 } }}
+              InputLabelProps={{ shrink: true }}
+              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 }, ...(supplierId ? { '& .MuiOutlinedInput-root': { bgcolor: '#f1f5f9' } } : {}) }}
             />
           </Grid>
-          <Grid item xs="auto">
-            <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', height: '100%' }}>
-              <FormControlLabel
-                value="Vat"
-                control={<Radio size="small" checked={vatType === 'Vat'} onChange={() => setVatType('Vat')} sx={{ color: '#1e293b', '&.Mui-checked': { color: '#1e293b' }, p: 0.3 }} />}
-                label="VAT"
-                sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.8rem', fontWeight: 600 }, m: 0 }}
-              />
-              <FormControlLabel
-                value="NonVat"
-                control={<Radio size="small" checked={vatType === 'NonVat'} onChange={() => setVatType('NonVat')} sx={{ color: '#1e293b', '&.Mui-checked': { color: '#1e293b' }, p: 0.3 }} />}
-                label="Non-VAT"
-                sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.8rem', fontWeight: 600 }, m: 0 }}
-              />
+          {/* VAT Type - B2C style box */}
+          <Grid item xs={6} sm={3} md={2} lg={1.5}>
+            <Box sx={{ border: '1px solid #e2e8f0', borderRadius: 1.5, px: 1.2, py: 0.5, bgcolor: '#f8fafc', height: '100%' }}>
+              <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', letterSpacing: 0.3, mb: 0.2 }}>VAT TYPE</Typography>
+              <RadioGroup row value={vatType} onChange={(e) => setVatType(e.target.value as 'Vat' | 'NonVat')}>
+                <FormControlLabel value="Vat" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Vat" sx={{ mr: 1, '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
+                <FormControlLabel value="NonVat" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Non Vat" sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
+              </RadioGroup>
             </Box>
           </Grid>
-          {/* Navigation Panel - right of Non-VAT */}
+          {/* Payment - same style as VAT Type */}
+          <Grid item xs={6} sm={3} md={2} lg={1.5}>
+            <Box sx={{ border: '1px solid #e2e8f0', borderRadius: 1.5, px: 1.2, py: 0.5, bgcolor: '#f8fafc', height: '100%' }}>
+              <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', letterSpacing: 0.3, mb: 0.2 }}>PAYMENT</Typography>
+              <RadioGroup row value={paymentType} onChange={(e) => setPaymentType(e.target.value as 'Cash' | 'Credit')}>
+                <FormControlLabel value="Cash" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Cash" sx={{ mr: 1, '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
+                <FormControlLabel value="Credit" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Credit" sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
+              </RadioGroup>
+            </Box>
+          </Grid>
+          {/* Navigation - B2C style buttons */}
           <Grid item xs="auto">
-            <Box sx={{ display: 'flex', gap: 0.3, alignItems: 'center' }}>
-              <IconButton onClick={navFirst} disabled={invoiceList.length === 0} size="medium" sx={{ border: '1px solid #e2e8f0', borderRadius: 1, p: 1, '&:hover': { bgcolor: '#f8fafc' } }}><FirstIcon sx={{ color: '#1e293b', fontSize: '3rem' }} /></IconButton>
-              <IconButton onClick={navPrev} disabled={invoiceList.length === 0 || currentNavIndex === 0} size="medium" sx={{ border: '1px solid #e2e8f0', borderRadius: 1, p: 1, '&:hover': { bgcolor: '#f8fafc' } }}><PrevIcon sx={{ color: '#1e293b', fontSize: '3rem' }} /></IconButton>
-              <IconButton onClick={navNext} disabled={invoiceList.length === 0 || currentNavIndex >= invoiceList.length - 1} size="medium" sx={{ border: '1px solid #e2e8f0', borderRadius: 1, p: 1, '&:hover': { bgcolor: '#f8fafc' } }}><NextIcon sx={{ color: '#1e293b', fontSize: '3rem' }} /></IconButton>
-              <IconButton onClick={navLast} disabled={invoiceList.length === 0} size="medium" sx={{ border: '1px solid #e2e8f0', borderRadius: 1, p: 1, '&:hover': { bgcolor: '#f8fafc' } }}><LastIcon sx={{ color: '#1e293b', fontSize: '3rem' }} /></IconButton>
+            <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+              {[
+                { icon: <FirstIcon />, handler: navFirst, tip: 'First', disabled: invoiceList.length === 0 },
+                { icon: <PrevIcon />, handler: navPrev, tip: 'Previous', disabled: invoiceList.length === 0 || currentNavIndex === 0 },
+                { icon: <NextIcon />, handler: navNext, tip: 'Next', disabled: invoiceList.length === 0 || currentNavIndex >= invoiceList.length - 1 },
+                { icon: <LastIcon />, handler: navLast, tip: 'Last', disabled: invoiceList.length === 0 },
+              ].map((nav, i) => (
+                <Tooltip key={i} title={`${nav.tip} Invoice`}>
+                  <span>
+                    <Button
+                      variant="contained"
+                      size="small"
+                      onClick={nav.handler}
+                      disabled={nav.disabled}
+                      sx={{ flex: 1, py: 0.4, minWidth: 36, borderRadius: 1.5, bgcolor: '#334155', '&:hover': { bgcolor: '#1e293b' }, boxShadow: 'none', '&.Mui-disabled': { bgcolor: '#e2e8f0', color: '#94a3b8' } }}
+                    >
+                      {nav.icon}
+                    </Button>
+                  </span>
+                </Tooltip>
+              ))}
               {invoiceList.length > 0 && (
-                <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, ml: 0.3, fontSize: '0.7rem' }}>
+                <Typography sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.7rem', ml: 0.3 }}>
                   {currentNavIndex >= 0 ? `${currentNavIndex + 1}/${invoiceList.length}` : `${invoiceList.length}`}
                 </Typography>
               )}
             </Box>
           </Grid>
-          {/* Product Info - inline right side */}
-          <Grid item xs>
-            <Box sx={{ border: '1px solid #e2e8f0', borderRadius: 1, px: 1, py: 0.3, bgcolor: '#f8fafc', minHeight: 40, display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Typography variant="caption" sx={{ fontWeight: 700, color: '#1e293b', fontSize: '0.7rem', whiteSpace: 'nowrap' }}>Info</Typography>
+          <Grid item xs />
+          {/* Product Info - B2C style */}
+          <Grid item xs={12} md={12} lg={6}>
+            <Box sx={{
+              borderRadius: 1.5, px: 1.5, py: 0.8, minHeight: 40, display: 'flex', alignItems: 'center', gap: 1.5,
+              background: selectedProductInfo ? 'linear-gradient(135deg, #f0fdfa 0%, #ecfdf5 50%, #f0fdf4 100%)' : '#f8fafc',
+              border: selectedProductInfo ? '1px solid #99f6e4' : '1px dashed #cbd5e1',
+              transition: 'all 0.2s',
+            }}>
+              <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', letterSpacing: 0.3, whiteSpace: 'nowrap' }}>Info</Typography>
               {selectedProductInfo ? (
                 <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
                   <Box>
@@ -2054,11 +2061,11 @@ export default function PurchaseEntry() {
                   )}
                 </Box>
               ) : (
-                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.65rem' }}>Select a product</Typography>
+                <Typography sx={{ fontSize: '0.82rem', color: '#94a3b8', fontStyle: 'italic' }}>Select a product</Typography>
               )}
             </Box>
           </Grid>
-          {/* Tax Mode */}
+          {/* Tax - B2C style */}
           <Grid item xs="auto">
             <TextField
               size="small"
@@ -2067,36 +2074,36 @@ export default function PurchaseEntry() {
               value={taxMode}
               onChange={(e) => setTaxMode(e.target.value as 'inclusive' | 'exclusive')}
               InputLabelProps={{ shrink: true }}
-              sx={{ minWidth: 130, height: 38, '& .MuiOutlinedInput-root': { borderRadius: 1, height: 38 }, '& .MuiInputLabel-root': { fontWeight: 600 } }}
+              sx={{ minWidth: 130, height: 38, '& .MuiOutlinedInput-root': { borderRadius: 1.5, height: 38 } }}
             >
               <MenuItem value="inclusive">Include Tax</MenuItem>
               <MenuItem value="exclusive">Exclude Tax</MenuItem>
             </TextField>
           </Grid>
-          {/* Hold & Held list buttons */}
+          {/* Hold & Held - B2C style */}
           <Grid item xs="auto">
             <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
               <Tooltip title="Hold this purchase for later">
-                <Button
-                  variant="contained"
-                  size="small"
-                  color="warning"
-                  onClick={handleHoldPurchase}
-                  disabled={isSaved}
-                  sx={{ height: 36, minWidth: 0, px: 1.5, textTransform: 'none', fontSize: '0.75rem' }}
-                  startIcon={<HoldIcon sx={{ fontSize: 16 }} />}
-                >
-                  Hold
-                </Button>
+                <span>
+                  <Button
+                    variant="contained"
+                    size="small"
+                    onClick={handleHoldPurchase}
+                    disabled={isSaved}
+                    sx={{ height: 36, minWidth: 0, px: 1.5, textTransform: 'none', borderRadius: 1.5, bgcolor: '#f59e0b', '&:hover': { bgcolor: '#d97706' }, boxShadow: 'none', '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}
+                    startIcon={<HoldIcon sx={{ fontSize: 16 }} />}
+                  >
+                    Hold
+                  </Button>
+                </span>
               </Tooltip>
               <Tooltip title={heldPurchases.length > 0 ? `${heldPurchases.length} held purchase(s)` : 'No held purchases'}>
-                <Badge badgeContent={heldPurchases.length} color="error" sx={{ '& .MuiBadge-badge': { fontSize: 11, height: 18, minWidth: 18 } }}>
+                <Badge badgeContent={heldPurchases.length} color="error" sx={{ '& .MuiBadge-badge': { fontSize: 10, height: 16, minWidth: 16 } }}>
                   <Button
                     variant="outlined"
                     size="small"
-                    color="info"
                     onClick={() => setHoldListDialogOpen(true)}
-                    sx={{ height: 36, minWidth: 0, px: 1 }}
+                    sx={{ height: 36, minWidth: 36, px: 0.8, borderRadius: 1.5, borderColor: '#cbd5e1', color: '#475569', '&:hover': { borderColor: '#94a3b8', bgcolor: '#f8fafc' } }}
                   >
                     <HoldListIcon fontSize="small" />
                   </Button>

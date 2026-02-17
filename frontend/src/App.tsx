@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { useAppSelector } from './store/hooks';
 import Login from './pages/Login';
 import MainLayout from './layouts/MainLayout';
@@ -90,7 +90,7 @@ export default function App() {
         }
       >
         <Route index element={<Dashboard />} />
-        <Route path="file">
+        <Route path="file" element={<Outlet />}>
           <Route path="companies" element={<CompanyList />} />
           <Route path="companies/create" element={<CompanyCreate />} />
           <Route path="company-details" element={<CompanyDetails />} />
@@ -101,7 +101,7 @@ export default function App() {
           <Route path="change-financial-year" element={<ChangeFinancialYear />} />
           <Route path="software-settings" element={<SoftwareSettings />} />
         </Route>
-        <Route path="master">
+        <Route path="master" element={<Outlet />}>
           <Route path="products" element={<ProductList />} />
           <Route path="products/create" element={<ProductCreate />} />
           <Route path="products/management" element={<ProductManagement />} />
@@ -116,7 +116,7 @@ export default function App() {
           <Route path="chart-of-accounts" element={<ChartOfAccounts />} />
           <Route path="stock-adjustment" element={<StockAdjustment />} />
         </Route>
-        <Route path="entry">
+        <Route path="entry" element={<Outlet />}>
           <Route path="opening-stock" element={<OpeningStock />} />
           <Route path="opening-balance" element={<OpeningBalance />} />
           <Route path="pos" element={<POS />} />
@@ -132,7 +132,7 @@ export default function App() {
           <Route path="bank-reconciliation" element={<BankReconciliation />} />
           <Route path="damage-wastage" element={<DamageWastage />} />
         </Route>
-        <Route path="report">
+        <Route path="report" element={<Outlet />}>
           <Route path="product-list" element={<ProductListReport />} />
           <Route path="unit-list" element={<UnitList />} />
           <Route path="customer-list" element={<CustomerListReport />} />
@@ -157,13 +157,13 @@ export default function App() {
           <Route path="product-movement" element={<ProductMovementReport />} />
           <Route path="event-report" element={<EventReport />} />
         </Route>
-        <Route path="utilities">
+        <Route path="utilities" element={<Outlet />}>
           <Route path="backup" element={<Backup />} />
           <Route path="restore" element={<Restore />} />
           <Route path="barcode-design" element={<BarcodeDesign />} />
           <Route path="barcode-print" element={<BarcodePrint />} />
         </Route>
-        <Route path="help">
+        <Route path="help" element={<Outlet />}>
           <Route path="backup" element={<BackupShortcut />} />
           <Route path="restore" element={<RestoreShortcut />} />
           <Route path="import-opening-stock" element={<ImportOpeningStock />} />

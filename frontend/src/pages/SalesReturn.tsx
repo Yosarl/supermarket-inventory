@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Box, Paper, Typography, TextField, Button, Grid, IconButton,
-  Autocomplete, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
+  Autocomplete, createFilterOptions, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   Dialog, DialogTitle, DialogContent, DialogActions, RadioGroup, FormControlLabel, Radio,
   MenuItem, Checkbox, FormControlLabel as MuiFormControlLabel, Divider,
 } from '@mui/material';
@@ -12,10 +12,14 @@ import {
   Print as PrintIcon,
   Edit as EditIcon,
   Search as SearchIcon,
+  FirstPage as FirstIcon,
+  ChevronLeft as PrevIcon,
+  ChevronRight as NextIcon,
+  LastPage as LastIcon,
 } from '@mui/icons-material';
 import { useSelector, useDispatch } from 'react-redux';
 import type { RootState } from '../store';
-import { salesApi, ledgerAccountApi, productApi } from '../services/api';
+import { salesApi, ledgerAccountApi, productApi, purchaseApi } from '../services/api';
 import DateInput, { getCurrentDate } from '../components/DateInput';
 import { setDrawerOpen } from '../store/slices/appSlice';
 
@@ -35,6 +39,8 @@ interface ProductOption {
   unitId?: string;
   unitName?: string;
   allowBatches?: boolean;
+  imei?: string;
+  multiUnits?: Array<{ imei?: string; unitId?: string; conversion?: number }>;
 }
 
 interface UnitOption {
@@ -81,6 +87,7 @@ interface RefInvoiceItem {
   discount?: number;
   totalAmount: number;
   unitName?: string;
+  batchNumber?: string;
 }
 
 const emptyLine = (): LineItem => ({
@@ -112,6 +119,8 @@ export default function SalesReturn() {
   const [otherDiscPercent, setOtherDiscPercent] = useState(0);
   const [otherDiscount, setOtherDiscount] = useState(0);
   const [otherCharges, setOtherCharges] = useState(0);
+  const [freightCharge, setFreightCharge] = useState(0);
+  const [lendAddLess, setLendAddLess] = useState(0);
   const [roundOff, setRoundOff] = useState(0);
   const [narration, setNarration] = useState('');
   const [loading, setLoading] = useState(false);
@@ -127,7 +136,165 @@ export default function SalesReturn() {
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
   const [errorDialogMessage, setErrorDialogMessage] = useState('');
   const [editingNumericCell, setEditingNumericCell] = useState<{ lineId?: string; field: string; value: string } | null>(null);
+  const [invoiceList, setInvoiceList] = useState<Array<{ _id: string; invoiceNo: string; date: string; customerName?: string; totalAmount?: number }>>([]);
+  const [currentNavIndex, setCurrentNavIndex] = useState<number>(-1);
+  const [salesAccountName, setSalesAccountName] = useState<string>('');
+  const [batchDialogOpen, setBatchDialogOpen] = useState(false);
+  const [focusedBatchIndex, setFocusedBatchIndex] = useState(0);
+  const [availableBatches, setAvailableBatches] = useState<{
+    batchNumber: string;
+    productId: string;
+    productName: string;
+    purchasePrice: number;
+    expiryDate: string;
+    quantity: number;
+    retail: number;
+    wholesale: number;
+  }[]>([]);
+  const [pendingProductSelection, setPendingProductSelection] = useState<{
+    lineId: string;
+    product: ProductOption;
+  } | null>(null);
+  const [activeLineId, setActiveLineId] = useState<string | null>(null);
+  const [selectedProductInfo, setSelectedProductInfo] = useState<{
+    profit?: number;
+    purchaseRate: number;
+    lastVendor?: string;
+    stock?: number;
+    retailPrice?: number;
+    wholesalePrice?: number;
+    batchNumber?: string;
+    expiryDate?: string;
+  } | null>(null);
+  const batchRowRefs = useRef<(HTMLTableRowElement | null)[]>([]);
   const saveButtonRef = useRef<HTMLButtonElement>(null);
+  const rowSnapshotRef = useRef<{ lineId: string; data: LineItem } | null>(null);
+  const rowCommittedRef = useRef(false);
+
+  const handleTextFieldFocus = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    e.target.select();
+  };
+
+  const productFilterOptions = useMemo(
+    () => createFilterOptions<ProductOption>({ matchFrom: 'any', stringify: (opt) => opt.name || '' }),
+    []
+  );
+
+  const revertUncommittedRow = useCallback(() => {
+    if (rowSnapshotRef.current && !rowCommittedRef.current) {
+      const snapshot = rowSnapshotRef.current;
+      setLines((prev) =>
+        prev.map((l) => (l.id === snapshot.lineId ? { ...snapshot.data } : l))
+      );
+    }
+    rowSnapshotRef.current = null;
+    rowCommittedRef.current = false;
+  }, []);
+
+  const enterRow = useCallback((line: LineItem) => {
+    if (rowSnapshotRef.current && rowSnapshotRef.current.lineId === line.id) return;
+    revertUncommittedRow();
+    if (line.productId) {
+      rowSnapshotRef.current = {
+        lineId: line.id,
+        data: { ...line, availableUnits: [...line.availableUnits] },
+      };
+      rowCommittedRef.current = false;
+    }
+  }, [revertUncommittedRow]);
+
+  const handleRowClick = useCallback((line: LineItem, event?: React.MouseEvent<HTMLTableRowElement>) => {
+    const target = event?.target as HTMLElement | null;
+    // Keep row-click quick-focus behavior, but do not steal focus when user clicks any editable control.
+    if (
+      target?.closest(
+        'input, textarea, button, [role="button"], [role="combobox"], .MuiInputBase-root, .MuiAutocomplete-root'
+      )
+    ) {
+      return;
+    }
+    enterRow(line);
+    setActiveLineId(line.id);
+    setTimeout(() => imeiInputRefs.current[line.id]?.focus(), 50);
+  }, [enterRow]);
+
+  // Sync Product Info from active line (same idea as Sales B2C)
+  useEffect(() => {
+    if (!activeLineId) {
+      setSelectedProductInfo(null);
+      return;
+    }
+    const line = lines.find((l) => l.id === activeLineId);
+    if (!line || !line.productId) {
+      setSelectedProductInfo(null);
+      return;
+    }
+    const product = products.find((p) => p._id === line.productId);
+    const profit = line.price - line.purchasePrice;
+    setSelectedProductInfo({
+      profit,
+      purchaseRate: line.purchasePrice,
+      lastVendor: (product as { lastVendor?: string } | undefined)?.lastVendor ?? '-',
+      batchNumber: line.batchNumber,
+      retailPrice: line.price,
+    });
+  }, [activeLineId, lines, products]);
+
+  const handleGridArrowNavigation = useCallback((
+    e: React.KeyboardEvent,
+    lineId: string,
+    fieldRefs: React.MutableRefObject<Record<string, HTMLInputElement | null>>
+  ) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    const currentIndex = lines.findIndex((l) => l.id === lineId);
+    if (currentIndex === -1) return;
+    const targetIndex = e.key === 'ArrowUp'
+      ? (currentIndex > 0 ? currentIndex - 1 : currentIndex)
+      : (currentIndex < lines.length - 1 ? currentIndex + 1 : currentIndex);
+    if (targetIndex === currentIndex) return;
+    const targetLine = lines[targetIndex];
+    enterRow(targetLine);
+    setActiveLineId(targetLine.id);
+    const targetInput = fieldRefs.current[targetLine.id];
+    if (targetInput) {
+      targetInput.focus();
+      targetInput.select();
+    }
+  }, [lines, enterRow]);
+
+  const handleNumberKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      return;
+    }
+    const allowedKeys = ['Backspace', 'Delete', 'Tab', 'Escape', 'Enter', '-', 'ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    if (allowedKeys.includes(e.key) || (e.ctrlKey && ['a', 'c', 'v', 'x'].includes(e.key.toLowerCase()))) return;
+    const input = e.target as HTMLInputElement;
+    const value = input.value;
+    const selStart = input.selectionStart ?? value.length;
+    const selEnd = input.selectionEnd ?? value.length;
+    if (e.key === '.') {
+      if (value.includes('.')) e.preventDefault();
+      return;
+    }
+    if (!/^[0-9]$/.test(e.key)) {
+      e.preventDefault();
+      return;
+    }
+    const dotIndex = value.indexOf('.');
+    if (dotIndex !== -1 && selStart === selEnd) {
+      const decimals = value.substring(dotIndex + 1);
+      if (decimals.length >= 2 && selStart > dotIndex) e.preventDefault();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (batchDialogOpen && batchRowRefs.current[focusedBatchIndex]) {
+      batchRowRefs.current[focusedBatchIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [batchDialogOpen, focusedBatchIndex]);
+
   const customerAcRef = useRef<HTMLInputElement>(null);
   const customerNameRef = useRef<HTMLInputElement>(null);
   const taxModeRef = useRef<HTMLInputElement>(null);
@@ -182,6 +349,127 @@ export default function SalesReturn() {
   useEffect(() => {
     loadNextInvoiceNo();
   }, [loadNextInvoiceNo]);
+
+  const loadInvoiceList = useCallback(async () => {
+    if (!companyId || !financialYearId) return;
+    try {
+      const res = await salesApi.listSalesReturns(companyId, financialYearId);
+      setInvoiceList(Array.isArray(res.data.data) ? res.data.data : []);
+    } catch {
+      setInvoiceList([]);
+    }
+  }, [companyId, financialYearId]);
+
+  useEffect(() => {
+    loadInvoiceList();
+  }, [loadInvoiceList]);
+
+  const loadInvoiceIntoForm = useCallback(async (id: string) => {
+    if (!companyId) return;
+    setLoading(true);
+    try {
+      const res = await salesApi.getSalesReturn(id, companyId);
+      const data = res.data.data as {
+        _id: string; invoiceNo: string; date: string; returnType: string;
+        originalInvoiceId?: string;
+        customerId?: string; customerName?: string; customerAddress?: string; cashAccountId?: string;
+        cashAccountName?: string; salesAccountName?: string;
+        vatType?: string; taxMode?: string; items: Array<{
+          productId: string | { _id: string; name?: string };
+          productCode?: string; imei?: string; description?: string;
+          quantity: number; unitPrice: number; discount?: number; totalAmount?: number;
+          unitName?: string; unitId?: string; batchNumber?: string;
+        }>;
+        otherDiscount?: number; otherCharges?: number; roundOff?: number; narration?: string;
+      };
+      setReturnId(data._id);
+      setInvoiceNo(data.invoiceNo);
+      setDate(data.date ? new Date(data.date).toISOString().slice(0, 10) : getCurrentDate());
+      setReturnType((data.returnType || 'OnAccount') as 'OnAccount' | 'ByRef');
+      setOriginalInvoiceIdForReturn(data.originalInvoiceId ?? null);
+      setCustomerId(data.customerId ?? null);
+      setCustomerName(data.customerName ?? 'CASH');
+      setCustomerAddress(data.customerAddress ?? '');
+      setVatType((data.vatType as 'Vat' | 'NonVat') || 'Vat');
+      setTaxMode((data.taxMode as 'inclusive' | 'exclusive') || 'exclusive');
+      setOtherDiscount(data.otherDiscount ?? 0);
+      setOtherCharges(data.otherCharges ?? 0);
+      setRoundOff(data.roundOff ?? 0);
+      setNarration(data.narration ?? '');
+      setSalesAccountName(data.salesAccountName ?? data.cashAccountName ?? '');
+      if (data.cashAccountId) setCashAccountId(data.cashAccountId);
+      const newLines: LineItem[] = (data.items || []).map((it, idx) => {
+        const pid = typeof it.productId === 'object' && it.productId !== null ? (it.productId as { _id: string })._id : String(it.productId);
+        const name = typeof it.productId === 'object' && (it.productId as { name?: string }).name ? (it.productId as { name: string }).name : (it.description || '');
+        const price = it.unitPrice ?? 0;
+        const qty = it.quantity ?? 0;
+        const total = it.totalAmount ?? qty * price;
+        const disc = it.discount ?? 0;
+        const gross = qty * price;
+        const net = gross - disc;
+        const vatRate = data.vatType === 'NonVat' ? 0 : 5;
+        const vatAmount = parseFloat((net * (vatRate / 100)).toFixed(2));
+        const lineTotal = parseFloat((net + vatAmount).toFixed(2));
+        const uname = (it.unitName as string) || 'Pcs';
+        const uid = (it.unitId as string) || (it as { unitId?: string }).unitId || 'pcs';
+        const availableUnits: UnitOption[] = [{ id: uid, name: uname }];
+        return {
+          id: `loaded-${idx}-${Date.now()}`,
+          productId: pid,
+          productCode: (it.productCode as string) || '',
+          imei: (it.imei as string) || '',
+          name: name || '',
+          unitId: uid,
+          unitName: uname,
+          availableUnits,
+          quantity: qty,
+          price,
+          purchasePrice: 0,
+          gross,
+          discPercent: 0,
+          discAmount: disc,
+          vatAmount,
+          total: lineTotal,
+          batchNumber: it.batchNumber,
+        };
+      });
+      setLines(newLines.length > 0 ? newLines : [emptyLine()]);
+      setActiveLineId(null);
+      const idx = invoiceList.findIndex((i) => i._id === id);
+      if (idx >= 0) setCurrentNavIndex(idx);
+    } catch {
+      setErrorDialogMessage('Failed to load sales return');
+      setErrorDialogOpen(true);
+    } finally {
+      setLoading(false);
+    }
+  }, [companyId, invoiceList]);
+
+  const navFirst = useCallback(() => {
+    if (invoiceList.length === 0) return;
+    loadInvoiceIntoForm(invoiceList[0]._id);
+  }, [invoiceList, loadInvoiceIntoForm]);
+
+  const navPrev = useCallback(() => {
+    if (invoiceList.length === 0) return;
+    if (currentNavIndex < 0) {
+      loadInvoiceIntoForm(invoiceList[invoiceList.length - 1]._id);
+      return;
+    }
+    const idx = currentNavIndex > 0 ? currentNavIndex - 1 : 0;
+    loadInvoiceIntoForm(invoiceList[idx]._id);
+  }, [invoiceList, currentNavIndex, loadInvoiceIntoForm]);
+
+  const navNext = useCallback(() => {
+    if (invoiceList.length === 0) return;
+    const idx = currentNavIndex < invoiceList.length - 1 ? currentNavIndex + 1 : invoiceList.length - 1;
+    loadInvoiceIntoForm(invoiceList[idx]._id);
+  }, [invoiceList, currentNavIndex, loadInvoiceIntoForm]);
+
+  const navLast = useCallback(() => {
+    if (invoiceList.length === 0) return;
+    loadInvoiceIntoForm(invoiceList[invoiceList.length - 1]._id);
+  }, [invoiceList, loadInvoiceIntoForm]);
 
   useEffect(() => {
     if (!companyId) return;
@@ -276,6 +564,7 @@ export default function SalesReturn() {
         discAmount: disc,
         vatAmount,
         total: lineTotal,
+        batchNumber: it.batchNumber ?? '',
       };
     });
     setLines(newLines.length > 0 ? newLines : [emptyLine()]);
@@ -310,21 +599,40 @@ export default function SalesReturn() {
   }, [vatType]);
 
   const removeLine = useCallback((id: string) => {
+    if (rowSnapshotRef.current?.lineId === id) {
+      rowSnapshotRef.current = null;
+      rowCommittedRef.current = false;
+    }
     setLines((prev) => {
       const filtered = prev.filter((l) => l.id !== id);
       return filtered.length > 0 ? filtered : [emptyLine()];
     });
+    setSelectedProductInfo(null);
+    setActiveLineId(null);
   }, []);
 
   const addLine = useCallback(() => {
-    setLines((prev) => [...prev, emptyLine()]);
+    const newLine = emptyLine();
+    setLines((prev) => [...prev, newLine]);
+    return newLine.id;
   }, []);
 
-  const handleProductSelect = useCallback((lineId: string, product: ProductOption) => {
-    const price = (product as { retail?: number }).retail ?? product.purchasePrice ?? 0;
+  const getBatchesForProduct = useCallback(async (productId: string) => {
+    try {
+      if (!companyId) return [];
+      const res = await purchaseApi.getProductBatches(companyId, productId);
+      return res.data.data || [];
+    } catch {
+      return [];
+    }
+  }, [companyId]);
+
+  const completeProductSelection = useCallback((lineId: string, product: ProductOption, selectedBatch?: typeof availableBatches[0]) => {
+    const price = selectedBatch?.retail ?? (product as { retail?: number }).retail ?? product.purchasePrice ?? 0;
     const uid = product.unitId ?? 'pcs';
     const uname = product.unitName ?? 'Pcs';
     const availableUnits: UnitOption[] = [{ id: uid, name: uname }];
+    const imei = product.imei ?? '';
     setLines((prev) =>
       prev.map((line) => {
         if (line.id !== lineId) return line;
@@ -338,6 +646,7 @@ export default function SalesReturn() {
           ...line,
           productId: product._id,
           productCode: product.code ?? '',
+          imei: imei || line.imei,
           name: product.name ?? '',
           unitId: uid,
           unitName: uname,
@@ -346,10 +655,103 @@ export default function SalesReturn() {
           gross,
           vatAmount,
           total,
+          batchNumber: selectedBatch?.batchNumber,
         };
       })
     );
+    setTimeout(() => qtyInputRefs.current[lineId]?.focus(), 50);
   }, [vatType]);
+
+  const handleProductSelect = useCallback(async (lineId: string, product: ProductOption) => {
+    const batches = await getBatchesForProduct(product._id);
+    // Treat allowBatches like Sales B2C: only merge when explicitly false (undefined = batch tracking on)
+    const allowBatches = product.allowBatches !== false;
+
+    if (allowBatches === false) {
+      if (batches.length > 0) {
+        const nonZeroBatches = batches.filter((b: { quantity: number }) => b.quantity > 0);
+        const avgPurchasePrice = nonZeroBatches.length > 0
+          ? nonZeroBatches.reduce((sum: number, b: { purchasePrice: number }) => sum + b.purchasePrice, 0) / nonZeroBatches.length
+          : batches[0].purchasePrice;
+        const totalQty = nonZeroBatches.reduce((sum: number, b: { quantity: number }) => sum + b.quantity, 0) || batches.reduce((sum: number, b: { quantity: number }) => sum + b.quantity, 0);
+        const avgRetail = nonZeroBatches.length > 0
+          ? nonZeroBatches.reduce((sum: number, b: { retail: number }) => sum + b.retail, 0) / nonZeroBatches.length
+          : batches[0].retail;
+        const mergedBatch = {
+          batchNumber: 'MERGED',
+          productId: product._id,
+          productName: product.name,
+          purchasePrice: avgPurchasePrice,
+          expiryDate: '',
+          quantity: totalQty,
+          retail: avgRetail,
+          wholesale: (batches[0] as { wholesale?: number }).wholesale ?? avgRetail,
+        };
+        completeProductSelection(lineId, product, mergedBatch);
+      } else {
+        completeProductSelection(lineId, product);
+      }
+      return;
+    }
+
+    // Like Sales B2C: show batch selection when product has any batches (1 or more)
+    if (batches.length >= 1) {
+      setAvailableBatches(batches);
+      setPendingProductSelection({ lineId, product });
+      setFocusedBatchIndex(0);
+      setBatchDialogOpen(true);
+    } else {
+      completeProductSelection(lineId, product);
+    }
+  }, [getBatchesForProduct, completeProductSelection]);
+
+  const handleBatchSelect = useCallback((selectedBatch: typeof availableBatches[0]) => {
+    if (pendingProductSelection) {
+      completeProductSelection(pendingProductSelection.lineId, pendingProductSelection.product, selectedBatch);
+    }
+    setBatchDialogOpen(false);
+    setAvailableBatches([]);
+    setPendingProductSelection(null);
+  }, [pendingProductSelection, completeProductSelection]);
+
+  const handleBatchDialogClose = useCallback(() => {
+    setBatchDialogOpen(false);
+    setAvailableBatches([]);
+    setPendingProductSelection(null);
+    setFocusedBatchIndex(0);
+  }, []);
+
+  const handleBatchDialogKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (!batchDialogOpen || availableBatches.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setFocusedBatchIndex((prev) => (prev < availableBatches.length - 1 ? prev + 1 : prev));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setFocusedBatchIndex((prev) => (prev > 0 ? prev - 1 : 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const selectedBatch = availableBatches[focusedBatchIndex];
+      if (selectedBatch) {
+        handleBatchSelect(selectedBatch);
+      }
+    }
+  }, [batchDialogOpen, availableBatches, focusedBatchIndex, handleBatchSelect]);
+
+  // Open batch dialog for a line that already has a batched product (e.g. return to item field and press Enter)
+  const openBatchDialogForLine = useCallback(async (line: LineItem) => {
+    if (!line.productId) return;
+    const product = products.find((p) => p._id === line.productId);
+    const isBatchedProduct = product?.allowBatches !== false || !!line.batchNumber;
+    if (!product || !isBatchedProduct) return;
+    const batches = await getBatchesForProduct(product._id);
+    if (batches.length >= 1) {
+      setAvailableBatches(batches);
+      setPendingProductSelection({ lineId: line.id, product });
+      setFocusedBatchIndex(0);
+      setBatchDialogOpen(true);
+    }
+  }, [products, getBatchesForProduct]);
 
   const handleUnitChange = useCallback((lineId: string, unitId: string) => {
     setLines((prev) =>
@@ -375,15 +777,48 @@ export default function SalesReturn() {
     setOtherDiscount(parseFloat((itemsTotal * (pct / 100)).toFixed(2)));
   }, [lines]);
 
-  // Enter key flow: move focus to next field (same as Sales B2C)
+  const handleImeiSearch = useCallback(async (lineId: string, imeiValue: string) => {
+    if (!imeiValue?.trim() || !companyId) return;
+    const searchImei = imeiValue.trim();
+    try {
+      const res = await productApi.getByImei(companyId, searchImei);
+      const data = res.data?.data as { product?: ProductOption; matchedMultiUnitId?: string } | undefined;
+      const product = data?.product;
+      if (product) {
+        const multiUnit = product.multiUnits?.find((mu) => mu.imei === searchImei);
+        const displayImei = multiUnit?.imei ?? product.imei ?? searchImei;
+        handleProductSelect(lineId, { ...product, imei: displayImei });
+        updateLine(lineId, 'imei', displayImei);
+      }
+    } catch {
+      // IMEI not found – leave focus on item name
+    }
+  }, [companyId, handleProductSelect, updateLine]);
+
+  // Enter key flow: if IMEI has value and no product, search by IMEI; else move to next field
   const handleImeiKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
       e.preventDefault();
+      if (line.imei.trim() && !line.productId) {
+        handleImeiSearch(line.id, line.imei);
+        return;
+      }
       setTimeout(() => itemNameInputRefs.current[line.id]?.focus(), 50);
     }
-  }, []);
+  }, [handleImeiSearch]);
   const handleItemNameKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
+      // If row already has a batched product, Enter opens batch dialog (like Sales B2C)
+      if (line.productId) {
+        const product = products.find((p) => p._id === line.productId);
+        const isBatchedProduct = product?.allowBatches !== false || !!line.batchNumber;
+        if (isBatchedProduct) {
+          e.preventDefault();
+          e.stopPropagation();
+          openBatchDialogForLine(line);
+          return;
+        }
+      }
       e.preventDefault();
       if (line.availableUnits.length > 0) {
         setTimeout(() => unitInputRefs.current[line.id]?.focus(), 50);
@@ -391,38 +826,53 @@ export default function SalesReturn() {
         setTimeout(() => qtyInputRefs.current[line.id]?.focus(), 50);
       }
     }
-  }, []);
+  }, [products, openBatchDialogForLine]);
   const handleQtyKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const idx = lines.findIndex((l) => l.id === line.id);
-      const isLastRow = idx === lines.length - 1;
-      const isBlank = !line.productId || line.quantity <= 0;
-      if (isLastRow && isBlank) {
-        setTimeout(() => narrationRef.current?.focus(), 50);
-        return;
-      }
-      if (line.quantity > 0) {
-        const priceInput = priceInputRefs.current[line.id];
-        if (priceInput) {
-          priceInput.focus();
-          priceInput.select();
-        }
+      const priceInput = priceInputRefs.current[line.id];
+      if (priceInput) {
+        priceInput.focus();
+        priceInput.select();
       }
     }
-  }, [lines]);
+  }, []);
   const handlePriceKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const idx = lines.findIndex((l) => l.id === line.id);
-      if (idx >= 0 && idx < lines.length - 1) {
-        const nextLine = lines[idx + 1];
-        setTimeout(() => itemNameInputRefs.current[nextLine.id]?.focus(), 50);
-      } else {
-        setTimeout(() => narrationRef.current?.focus(), 50);
+      const hasItemCode = !!(line.productId && line.productCode?.trim());
+      const hasItemName = !!(line.name?.trim());
+      const hasImei = !!(line.imei?.trim());
+      const hasQty = line.quantity > 0;
+      const hasPrice = line.price > 0;
+      if (!hasItemCode || !hasItemName || !hasImei || !hasQty || !hasPrice) {
+        if (!hasItemCode || !hasItemName) {
+          setTimeout(() => itemNameInputRefs.current[line.id]?.focus(), 50);
+        } else if (!hasImei) {
+          setTimeout(() => imeiInputRefs.current[line.id]?.focus(), 50);
+        } else if (!hasQty) {
+          setTimeout(() => qtyInputRefs.current[line.id]?.focus(), 50);
+        } else {
+          setTimeout(() => priceInputRefs.current[line.id]?.focus(), 50);
+        }
+        return;
       }
+      rowCommittedRef.current = true;
+      rowSnapshotRef.current = null;
+      const currentIndex = lines.findIndex((l) => l.id === line.id);
+      if (currentIndex >= 0 && currentIndex < lines.length - 1) {
+        const nextLine = lines[currentIndex + 1];
+        enterRow(nextLine);
+        setActiveLineId(nextLine.id);
+        setTimeout(() => itemNameInputRefs.current[nextLine.id]?.focus(), 50);
+        return;
+      }
+      const newLine = emptyLine();
+      setLines((prev) => [...prev, newLine]);
+      setActiveLineId(newLine.id);
+      setTimeout(() => itemNameInputRefs.current[newLine.id]?.focus(), 100);
     }
-  }, [lines]);
+  }, [lines, enterRow]);
   const handleDiscPercentKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -432,25 +882,34 @@ export default function SalesReturn() {
   const handleDiscAmountKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const idx = lines.findIndex((l) => l.id === line.id);
-      if (idx >= 0 && idx < lines.length - 1) {
-        const nextLine = lines[idx + 1];
-        setTimeout(() => itemNameInputRefs.current[nextLine.id]?.focus(), 50);
-      } else {
-        setTimeout(() => narrationRef.current?.focus(), 50);
-      }
+      setTimeout(() => qtyInputRefs.current[line.id]?.focus(), 50);
     }
-  }, [lines]);
+  }, []);
+
+  const handleGridKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.ctrlKey && (e.key.toLowerCase() === 'm' || e.key.toLowerCase() === 'p')) {
+      e.preventDefault();
+    }
+  }, []);
+
+  const handleQtyBlur = useCallback((line: LineItem) => {
+    const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'quantity' ? editingNumericCell.value : '';
+    const parsedQty = parseNumericInput(raw);
+    setEditingNumericCell((prev) => (prev && prev.lineId === line.id && prev.field === 'quantity' ? null : prev));
+    updateLine(line.id, 'quantity', parsedQty);
+  }, [editingNumericCell, updateLine]);
 
   const calculations = {
     subTotal: lines.reduce((s, l) => s + l.total, 0),
     totalVat: lines.reduce((s, l) => s + l.vatAmount, 0),
     otherDiscount: Number(otherDiscount) || 0,
     otherCharges: Number(otherCharges) || 0,
+    freightCharge: Number(freightCharge) || 0,
+    lendAddLess: Number(lendAddLess) || 0,
     roundOff: Number(roundOff) || 0,
     grandTotal: 0,
   };
-  calculations.grandTotal = calculations.subTotal - calculations.otherDiscount + calculations.otherCharges + calculations.roundOff;
+  calculations.grandTotal = calculations.subTotal - calculations.otherDiscount + calculations.otherCharges + calculations.freightCharge + calculations.lendAddLess + calculations.roundOff;
 
   const handleSave = useCallback(async () => {
     if (returnType === 'ByRef' && !originalInvoiceIdForReturn) {
@@ -493,9 +952,12 @@ export default function SalesReturn() {
           discount: l.discAmount,
           discountPercent: l.discPercent,
           unitName: l.unitName || undefined,
+          batchNumber: l.batchNumber || undefined,
         })),
         otherDiscount: calculations.otherDiscount,
         otherCharges: calculations.otherCharges,
+        freightCharge: calculations.freightCharge,
+        lendAddLess: calculations.lendAddLess,
         roundOff: calculations.roundOff,
         narration: narration || undefined,
       };
@@ -505,21 +967,27 @@ export default function SalesReturn() {
       setSavedDialogOpen(true);
       setLines([emptyLine()]);
       setCustomerId(null);
-      setCustomerName('');
+      setCustomerName('CASH');
       setCustomerAddress('');
+      setReturnId(null);
+      setSalesAccountName('');
+      setCurrentNavIndex(-1);
       setNarration('');
       setOtherDiscount(0);
       setOtherCharges(0);
+      setFreightCharge(0);
+      setLendAddLess(0);
       setRoundOff(0);
       setOriginalInvoiceIdForReturn(null);
       loadNextInvoiceNo();
+      loadInvoiceList();
     } catch (e: unknown) {
       setErrorDialogMessage((e as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Save failed');
       setErrorDialogOpen(true);
     } finally {
       setLoading(false);
     }
-  }, [companyId, financialYearId, date, returnType, originalInvoiceIdForReturn, customerId, customerName, customerAddress, cashAccountId, vatType, taxMode, lines, otherDiscount, otherCharges, roundOff, narration, calculations, loadNextInvoiceNo]);
+  }, [companyId, financialYearId, date, returnType, originalInvoiceIdForReturn, customerId, customerName, customerAddress, cashAccountId, vatType, taxMode, lines, otherDiscount, otherCharges, freightCharge, lendAddLess, roundOff, narration, calculations, loadNextInvoiceNo, loadInvoiceList]);
 
   const handleClear = useCallback(() => {
     setLines([emptyLine()]);
@@ -527,10 +995,14 @@ export default function SalesReturn() {
     setCustomerName('CASH');
     setCustomerAddress('');
     setReturnId(null);
+    setSalesAccountName('');
+    setCurrentNavIndex(-1);
     setNarration('');
     setOtherDiscPercent(0);
     setOtherDiscount(0);
     setOtherCharges(0);
+    setFreightCharge(0);
+    setLendAddLess(0);
     setRoundOff(0);
     setRefInvoiceData(null);
     setOriginalInvoiceIdForReturn(null);
@@ -562,6 +1034,8 @@ export default function SalesReturn() {
         }>;
         otherDiscount?: number;
         otherCharges?: number;
+        freightCharge?: number;
+        lendAddLess?: number;
         roundOff?: number;
         narration?: string;
       };
@@ -577,8 +1051,11 @@ export default function SalesReturn() {
       setTaxMode((data.taxMode as 'inclusive' | 'exclusive') || 'exclusive');
       setOtherDiscount(data.otherDiscount ?? 0);
       setOtherCharges(data.otherCharges ?? 0);
+      setFreightCharge(data.freightCharge ?? 0);
+      setLendAddLess(data.lendAddLess ?? 0);
       setRoundOff(data.roundOff ?? 0);
       setNarration(data.narration ?? '');
+      setSalesAccountName((data as { salesAccountName?: string; cashAccountName?: string }).salesAccountName ?? (data as { cashAccountName?: string }).cashAccountName ?? '');
       if (data.cashAccountId) setCashAccountId(data.cashAccountId);
       const newLines: LineItem[] = (data.items || []).map((it, idx) => {
         const pid = typeof it.productId === 'object' && it.productId !== null ? (it.productId as { _id: string })._id : String(it.productId);
@@ -612,17 +1089,30 @@ export default function SalesReturn() {
           discAmount: disc,
           vatAmount,
           total: lineTotal,
+          batchNumber: (it as { batchNumber?: string }).batchNumber,
         };
       });
       setLines(newLines.length > 0 ? newLines : [emptyLine()]);
       setSearchDialogOpen(false);
       setSearchInvoiceNo('');
+      if (financialYearId) {
+        loadInvoiceList().then(async () => {
+          try {
+            const r = await salesApi.listSalesReturns(companyId, financialYearId);
+            const list = Array.isArray(r.data.data) ? r.data.data : [];
+            const navIdx = list.findIndex((i: { _id: string }) => i._id === data._id);
+            setCurrentNavIndex(navIdx >= 0 ? navIdx : 0);
+          } catch {
+            setCurrentNavIndex(0);
+          }
+        });
+      }
     } catch {
       setSearchError('Sales return not found');
     } finally {
       setSearchLoading(false);
     }
-  }, [companyId, searchInvoiceNo]);
+  }, [companyId, financialYearId, searchInvoiceNo, loadInvoiceList]);
 
   const handleDelete = useCallback(async () => {
     if (!returnId || !companyId) return;
@@ -835,44 +1325,107 @@ export default function SalesReturn() {
                 const val = e.target.value as 'Cash' | 'Credit';
                 if (val === 'Credit' && !customerId) return;
                 setPaymentType(val);
-                if (val === 'Cash') {
-                  setCustomerId(null);
-                  setCustomerName('CASH');
-                  setCustomerAddress('');
-                }
               }}>
                 <FormControlLabel value="Cash" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Cash" sx={{ mr: 1, '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
                 <FormControlLabel value="Credit" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Credit" disabled={!customerId} sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
               </RadioGroup>
             </Box>
           </Grid>
+          {/* Navigation Panel */}
+          <Grid item xs="auto">
+            <Box sx={{ display: 'flex', gap: 0.3, alignItems: 'center' }}>
+              <IconButton onClick={navFirst} disabled={invoiceList.length === 0} size="medium" sx={{ border: '1px solid #e2e8f0', borderRadius: 1, p: 1, '&:hover': { bgcolor: '#f8fafc' } }} title="First"><FirstIcon sx={{ color: '#1e293b', fontSize: '1.5rem' }} /></IconButton>
+              <IconButton onClick={navPrev} disabled={invoiceList.length === 0 || currentNavIndex === 0} size="medium" sx={{ border: '1px solid #e2e8f0', borderRadius: 1, p: 1, '&:hover': { bgcolor: '#f8fafc' } }} title="Previous"><PrevIcon sx={{ color: '#1e293b', fontSize: '1.5rem' }} /></IconButton>
+              <IconButton onClick={navNext} disabled={invoiceList.length === 0 || currentNavIndex >= invoiceList.length - 1} size="medium" sx={{ border: '1px solid #e2e8f0', borderRadius: 1, p: 1, '&:hover': { bgcolor: '#f8fafc' } }} title="Next"><NextIcon sx={{ color: '#1e293b', fontSize: '1.5rem' }} /></IconButton>
+              <IconButton onClick={navLast} disabled={invoiceList.length === 0} size="medium" sx={{ border: '1px solid #e2e8f0', borderRadius: 1, p: 1, '&:hover': { bgcolor: '#f8fafc' } }} title="Last"><LastIcon sx={{ color: '#1e293b', fontSize: '1.5rem' }} /></IconButton>
+              {invoiceList.length > 0 && (
+                <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, ml: 0.3, fontSize: '0.7rem' }}>
+                  {currentNavIndex >= 0 ? `${currentNavIndex + 1}/${invoiceList.length}` : `${invoiceList.length}`}
+                </Typography>
+              )}
+            </Box>
+          </Grid>
+          {/* Product Info Section (same as Sales B2C) */}
+          <Grid item xs={12} md={12} lg={6}>
+            <Box sx={{
+              borderRadius: 1.5, px: 1.5, py: 0.8, height: '100%', display: 'flex', alignItems: 'center', gap: 1.5,
+              background: selectedProductInfo ? 'linear-gradient(135deg, #f0fdfa 0%, #ecfdf5 50%, #f0fdf4 100%)' : '#f8fafc',
+              border: selectedProductInfo ? '1px solid #99f6e4' : '1px dashed #cbd5e1',
+              transition: 'all 0.2s',
+            }}>
+              {selectedProductInfo ? (
+                <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'nowrap', alignItems: 'center', overflow: 'hidden', flex: 1 }}>
+                  <Box sx={{ minWidth: 0, px: 1, py: 0.3, bgcolor: (selectedProductInfo.profit ?? 0) >= 0 ? '#dcfce7' : '#fee2e2', borderRadius: 1 }}>
+                    <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>Profit</Typography>
+                    <Typography sx={{ fontWeight: 800, fontSize: '0.9rem', lineHeight: 1.3, color: (selectedProductInfo.profit ?? 0) >= 0 ? '#15803d' : '#dc2626' }}>{(selectedProductInfo.profit ?? 0).toFixed(2)}</Typography>
+                  </Box>
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>P.Rate</Typography>
+                    <Typography sx={{ fontSize: '0.85rem', fontWeight: 700, lineHeight: 1.3 }}>{selectedProductInfo.purchaseRate.toFixed(2)}</Typography>
+                  </Box>
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>Retail</Typography>
+                    <Typography sx={{ fontSize: '0.85rem', fontWeight: 700, lineHeight: 1.3, color: '#15803d' }}>{(selectedProductInfo.retailPrice ?? selectedProductInfo.purchaseRate).toFixed(2)}</Typography>
+                  </Box>
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>Vendor</Typography>
+                    <Typography sx={{ fontSize: '0.82rem', fontWeight: 700, lineHeight: 1.3 }}>{selectedProductInfo.lastVendor ?? '-'}</Typography>
+                  </Box>
+                  {selectedProductInfo.batchNumber && (
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography sx={{ fontSize: '0.62rem', lineHeight: 1, color: '#64748b', fontWeight: 500 }}>Batch</Typography>
+                      <Typography sx={{ fontSize: '0.8rem', fontWeight: 700, lineHeight: 1.3, color: '#0284c7' }}>
+                        {selectedProductInfo.batchNumber.length > 10 ? selectedProductInfo.batchNumber.substring(0, 10) + '..' : selectedProductInfo.batchNumber}
+                      </Typography>
+                    </Box>
+                  )}
+                </Box>
+              ) : (
+                <Typography sx={{ fontSize: '0.82rem', color: '#94a3b8', fontStyle: 'italic' }}>Select a product to see details</Typography>
+              )}
+            </Box>
+          </Grid>
         </Grid>
       </Paper>
 
-      {/* Product Grid - B2C style */}
+      {/* Product Grid - same as Sales B2C */}
       <Paper elevation={0} sx={{ mb: 1, width: '100%', overflow: 'hidden', border: '1px solid #e0e7ef', borderRadius: 2, bgcolor: 'white' }}>
-        <TableContainer sx={{ minHeight: 320, maxHeight: 400, width: '100%', bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }}>
-          <Table stickyHeader size="small" sx={{ minWidth: '100%', tableLayout: 'fixed', borderCollapse: 'separate', borderSpacing: 0, '& .MuiTableCell-root': { fontSize: '0.82rem' }, '& .MuiInputBase-input': { fontSize: '0.82rem' } }}>
+        <TableContainer
+          sx={{ minHeight: 400, maxHeight: 400, width: '100%', bgcolor: '#fafbfc', '& fieldset': { borderColor: '#e2e8f0' } }}
+          onBlurCapture={(e) => {
+            const container = e.currentTarget;
+            setTimeout(() => {
+              const active = document.activeElement;
+              if (!active) return;
+              const inPopper = active.closest('.MuiAutocomplete-popper, .MuiAutocomplete-listbox, .MuiPopper-root');
+              if (inPopper) return;
+              if (!container.contains(active)) {
+                revertUncommittedRow();
+              }
+            }, 100);
+          }}
+        >
+          <Table stickyHeader size="small" sx={{ minWidth: '100%', tableLayout: 'fixed', borderCollapse: 'separate', borderSpacing: 0, '& .MuiTableCell-root': { fontSize: '0.82rem' }, '& .MuiInputBase-input': { fontSize: '0.82rem' }, '& .MuiAutocomplete-input': { fontSize: '0.82rem' } }}>
             <TableHead>
               <TableRow>
                 {[
-                  { label: 'Sl', w: '2.5%' },
+                  { label: 'Sl', w: '3%' },
                   { label: 'Item Code', w: '6%' },
-                  { label: 'IMEI', w: '8%' },
-                  { label: 'Item Name', w: '16%' },
-                  { label: 'Unit', w: '6%' },
-                  { label: 'QTY', w: '5%' },
+                  { label: 'IMEI', w: '9%' },
+                  { label: 'Item Name', w: '19%' },
+                  { label: 'Unit', w: '8%' },
+                  { label: 'QTY', w: '6%' },
                   { label: 'Price', w: '6%' },
-                  { label: 'Gross', w: '6%' },
-                  { label: 'Disc%', w: '4%' },
+                  { label: 'Gross', w: '8%' },
+                  { label: 'Disc%', w: '5%' },
                   { label: 'Disc', w: '5%' },
                   { label: 'VAT', w: '5%' },
-                  { label: 'Total', w: '6%' },
-                  { label: '', w: '2.5%' },
+                  { label: 'Total', w: '8%' },
+                  { label: '', w: '3%' },
                 ].map((col, ci) => (
                   <TableCell key={ci} sx={{
                     bgcolor: '#0f766e', color: 'white', fontWeight: 600, fontSize: '0.75rem', width: col.w,
-                    p: '6px 4px', textAlign: ci >= 5 ? 'right' : 'center', letterSpacing: 0.3, textTransform: 'uppercase',
+                    p: '6px 4px', textAlign: 'center', letterSpacing: 0.3, textTransform: 'uppercase',
                     borderRight: ci < 12 ? '1px solid rgba(255,255,255,0.15)' : 'none',
                   }}>
                     {col.label}
@@ -886,28 +1439,54 @@ export default function SalesReturn() {
                   key={line.id}
                   sx={{
                     bgcolor: idx === 0 && !line.productId ? '#fffbeb' : (idx % 2 === 0 ? '#f8fafb' : 'white'),
+                    cursor: 'pointer',
                     '&:hover': { bgcolor: '#e0f7fa' },
+                    transition: 'background-color 0.1s',
                   }}
+                  onClick={(e) => handleRowClick(line, e)}
+                  onFocusCapture={() => { enterRow(line); setActiveLineId(line.id); }}
+                  onKeyDownCapture={(e) => handleGridKeyDown(e)}
                 >
                   <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6', textAlign: 'center', fontWeight: 700, color: '#64748b', fontSize: '0.8rem', bgcolor: '#f1f5f9' }}>{idx + 1}</TableCell>
                   <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
-                    <TextField size="small" variant="outlined" value={line.productCode} fullWidth InputProps={{ readOnly: true }} sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }} />
+                    <TextField size="small" variant="outlined" value={line.productCode} fullWidth InputProps={{ readOnly: true }} sx={{ '& .MuiOutlinedInput-root': { bgcolor: '#f8fafc', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }} />
                   </TableCell>
-                  <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
-                    <TextField size="small" variant="outlined" value={line.imei} onChange={(e) => updateLine(line.id, 'imei', e.target.value)} onKeyDown={(e) => handleImeiKeyDown(e, line)} inputRef={(el) => { imeiInputRefs.current[line.id] = el; }} fullWidth placeholder="IMEI" sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }} />
+                  <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }} onClick={(e) => e.stopPropagation()}>
+                    <TextField
+                      size="small"
+                      variant="outlined"
+                      value={line.imei}
+                      onChange={(e) => updateLine(line.id, 'imei', e.target.value)}
+                      onFocus={handleTextFieldFocus}
+                      onKeyDown={(e) => {
+                        handleGridArrowNavigation(e, line.id, imeiInputRefs);
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          if (!line.imei.trim()) setTimeout(() => itemNameInputRefs.current[line.id]?.focus(), 50);
+                          else handleImeiSearch(line.id, line.imei);
+                        } else {
+                          handleImeiKeyDown(e, line);
+                        }
+                      }}
+                      inputRef={(el) => { imeiInputRefs.current[line.id] = el; }}
+                      fullWidth
+                      placeholder="IMEI"
+                      sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
+                    />
                   </TableCell>
-                  <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
+                  <TableCell sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }} onClick={(e) => e.stopPropagation()}>
                     {returnType === 'OnAccount' ? (
                       <Autocomplete
                         size="small"
                         freeSolo
                         options={products}
+                        filterOptions={productFilterOptions}
                         getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt.name || '')}
                         isOptionEqualToValue={(opt, val) => (typeof opt === 'object' && typeof val === 'object' && opt._id === (val as ProductOption)._id)}
                         value={line.productId ? products.find((p) => p._id === line.productId) ?? null : null}
                         inputValue={line.name}
                         onInputChange={(_, v) => updateLine(line.id, 'name', v)}
-                        onChange={(_, v) => { if (v && typeof v !== 'string') handleProductSelect(line.id, v); }}
+                        onChange={(_, v) => { if (v && typeof v !== 'string') void handleProductSelect(line.id, v); }}
                         renderInput={(params) => (
                           <TextField
                             {...params}
@@ -919,7 +1498,32 @@ export default function SalesReturn() {
                             sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
                           />
                         )}
-                        ListboxProps={{ sx: { maxHeight: 220 } }}
+                        renderOption={(props, opt) => (
+                          <li {...props} key={opt._id} style={{ fontSize: '0.82rem', fontWeight: 400, padding: '6px 14px', background: '#ffffff', color: '#334155', cursor: 'pointer' }}>
+                            {opt.name}
+                          </li>
+                        )}
+                        ListboxProps={{
+                          sx: {
+                            p: 0,
+                            maxHeight: 250,
+                            overflowX: 'hidden',
+                            overflowY: 'auto',
+                            '&::-webkit-scrollbar': { display: 'none' },
+                            msOverflowStyle: 'none',
+                            scrollbarWidth: 'none',
+                            '& .MuiAutocomplete-option': {
+                              minHeight: 'auto', py: 0.75, px: 2, fontSize: '0.82rem', bgcolor: 'transparent',
+                              '&[data-focus="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
+                              '&[aria-selected="true"]': { bgcolor: '#0f766e !important', color: '#ffffff !important' },
+                              '&.Mui-focused': { bgcolor: '#0f766e !important', color: '#ffffff !important' }
+                            }
+                          }
+                        }}
+                        componentsProps={{
+                          popper: { placement: 'bottom-start', modifiers: [{ name: 'flip', enabled: false }, { name: 'preventOverflow', enabled: false }] },
+                          paper: { sx: { width: '300px', boxShadow: '0 8px 24px rgba(15,118,110,0.15)', borderRadius: '8px', border: '1px solid #99f6e4', bgcolor: '#ffffff', overflow: 'hidden', mt: 0.5 } }
+                        }}
                         sx={{ width: '100%' }}
                       />
                     ) : (
@@ -943,7 +1547,7 @@ export default function SalesReturn() {
                       variant="outlined"
                       value={line.unitId}
                       onChange={(e) => handleUnitChange(line.id, e.target.value)}
-                      onKeyDown={(e) => handleUnitKeyDown(e, line.id)}
+                      onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, unitInputRefs); handleUnitKeyDown(e, line.id); }}
                       fullWidth
                       disabled={line.availableUnits.length === 0}
                       inputRef={(el) => { unitInputRefs.current[line.id] = el; }}
@@ -964,14 +1568,14 @@ export default function SalesReturn() {
                       variant="outlined"
                       type="number"
                       value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'quantity' ? editingNumericCell.value : (line.quantity === 0 ? '' : String(line.quantity))}
-                      onFocus={(e) => { setEditingNumericCell({ lineId: line.id, field: 'quantity', value: line.quantity === 0 ? '' : String(line.quantity) }); }}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'quantity', value: line.quantity === 0 ? '' : String(line.quantity) }); }}
                       onChange={(e) => setEditingNumericCell((prev) => prev?.lineId === line.id && prev?.field === 'quantity' ? { ...prev, value: e.target.value } : prev)}
-                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'quantity' ? editingNumericCell.value : ''; updateLine(line.id, 'quantity', parseNumericInput(raw)); setEditingNumericCell(null); }}
-                      onKeyDown={(e) => handleQtyKeyDown(e, line)}
+                      onBlur={() => handleQtyBlur(line)}
+                      onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, qtyInputRefs); handleNumberKeyDown(e); handleQtyKeyDown(e, line); }}
                       inputRef={(el) => { qtyInputRefs.current[line.id] = el; }}
-                      inputProps={{ min: 0, style: { textAlign: 'center' }, inputMode: 'decimal' }}
+                      inputProps={{ min: 0, style: { textAlign: 'center', fontSize: '0.82rem' }, inputMode: 'decimal' }}
                       fullWidth
-                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
+                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3 } }}
                     />
                   </TableCell>
                   <TableCell align="right" sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
@@ -980,14 +1584,14 @@ export default function SalesReturn() {
                       variant="outlined"
                       type="number"
                       value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'price' ? editingNumericCell.value : (line.price === 0 ? '' : String(line.price))}
-                      onFocus={(e) => { setEditingNumericCell({ lineId: line.id, field: 'price', value: line.price === 0 ? '' : String(line.price) }); }}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'price', value: line.price === 0 ? '' : String(line.price) }); }}
                       onChange={(e) => setEditingNumericCell((prev) => prev?.lineId === line.id && prev?.field === 'price' ? { ...prev, value: e.target.value } : prev)}
-                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'price' ? editingNumericCell.value : ''; updateLine(line.id, 'price', parseNumericInput(raw)); setEditingNumericCell(null); }}
-                      onKeyDown={(e) => handlePriceKeyDown(e, line)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'price' ? editingNumericCell.value : ''; const num = parseFloat(parseNumericInput(raw).toFixed(2)); updateLine(line.id, 'price', num); setEditingNumericCell((prev) => (prev && prev.lineId === line.id && prev.field === 'price' ? null : prev)); }}
+                      onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, priceInputRefs); handleNumberKeyDown(e); handlePriceKeyDown(e, line); }}
                       inputRef={(el) => { priceInputRefs.current[line.id] = el; }}
-                      inputProps={{ min: 0, style: { textAlign: 'right' }, inputMode: 'decimal' }}
+                      inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.82rem' }, inputMode: 'decimal' }}
                       fullWidth
-                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
+                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3 } }}
                     />
                   </TableCell>
                   <TableCell align="right" sx={{ p: '5px 6px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6', fontSize: '0.82rem', fontWeight: 500, color: '#475569' }}>{line.gross.toFixed(2)}</TableCell>
@@ -997,14 +1601,14 @@ export default function SalesReturn() {
                       variant="outlined"
                       type="number"
                       value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discPercent' ? editingNumericCell.value : (line.discPercent === 0 ? '' : String(line.discPercent))}
-                      onFocus={(e) => { setEditingNumericCell({ lineId: line.id, field: 'discPercent', value: line.discPercent === 0 ? '' : String(line.discPercent) }); }}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'discPercent', value: line.discPercent === 0 ? '' : String(line.discPercent) }); }}
                       onChange={(e) => setEditingNumericCell((prev) => prev?.lineId === line.id && prev?.field === 'discPercent' ? { ...prev, value: e.target.value } : prev)}
-                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discPercent' ? editingNumericCell.value : ''; updateLine(line.id, 'discPercent', parseNumericInput(raw)); setEditingNumericCell(null); }}
-                      onKeyDown={(e) => handleDiscPercentKeyDown(e, line)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discPercent' ? editingNumericCell.value : ''; updateLine(line.id, 'discPercent', parseNumericInput(raw)); setEditingNumericCell((prev) => (prev && prev.lineId === line.id && prev.field === 'discPercent' ? null : prev)); }}
+                      onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, discPercentInputRefs); handleNumberKeyDown(e); handleDiscPercentKeyDown(e, line); }}
                       inputRef={(el) => { discPercentInputRefs.current[line.id] = el; }}
-                      inputProps={{ min: 0, max: 100, style: { textAlign: 'center' }, inputMode: 'decimal' }}
+                      inputProps={{ min: 0, max: 100, style: { textAlign: 'center', fontSize: '0.82rem' }, inputMode: 'decimal' }}
                       fullWidth
-                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
+                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3 } }}
                     />
                   </TableCell>
                   <TableCell align="right" sx={{ p: '3px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6' }}>
@@ -1013,19 +1617,19 @@ export default function SalesReturn() {
                       variant="outlined"
                       type="number"
                       value={editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discAmount' ? editingNumericCell.value : (line.discAmount === 0 ? '' : String(line.discAmount))}
-                      onFocus={(e) => { setEditingNumericCell({ lineId: line.id, field: 'discAmount', value: line.discAmount === 0 ? '' : String(line.discAmount) }); }}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ lineId: line.id, field: 'discAmount', value: line.discAmount === 0 ? '' : String(line.discAmount) }); }}
                       onChange={(e) => setEditingNumericCell((prev) => prev?.lineId === line.id && prev?.field === 'discAmount' ? { ...prev, value: e.target.value } : prev)}
-                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discAmount' ? editingNumericCell.value : ''; updateLine(line.id, 'discAmount', parseNumericInput(raw)); setEditingNumericCell(null); }}
-                      onKeyDown={(e) => handleDiscAmountKeyDown(e, line)}
+                      onBlur={() => { const raw = editingNumericCell?.lineId === line.id && editingNumericCell?.field === 'discAmount' ? editingNumericCell.value : ''; updateLine(line.id, 'discAmount', parseNumericInput(raw)); setEditingNumericCell((prev) => (prev && prev.lineId === line.id && prev.field === 'discAmount' ? null : prev)); }}
+                      onKeyDown={(e) => { handleGridArrowNavigation(e, line.id, discAmountInputRefs); handleNumberKeyDown(e); handleDiscAmountKeyDown(e, line); }}
                       inputRef={(el) => { discAmountInputRefs.current[line.id] = el; }}
-                      inputProps={{ min: 0, style: { textAlign: 'right' }, inputMode: 'decimal' }}
+                      inputProps={{ min: 0, style: { textAlign: 'right', fontSize: '0.82rem' }, inputMode: 'decimal' }}
                       fullWidth
-                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
+                      sx={{ ...numberInputStyle, '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3 } }}
                     />
                   </TableCell>
                   <TableCell align="right" sx={{ p: '5px 6px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6', fontSize: '0.82rem', fontWeight: 500, color: '#64748b' }}>{line.vatAmount.toFixed(2)}</TableCell>
                   <TableCell align="right" sx={{ p: '5px 6px', borderRight: '1px solid #f0f0f0', borderBottom: '1px solid #eef2f6', fontWeight: 700, fontSize: '0.85rem', color: '#0f766e' }}>{line.total.toFixed(2)}</TableCell>
-                  <TableCell sx={{ p: '3px', borderBottom: '1px solid #eef2f6', textAlign: 'center' }}>
+                  <TableCell sx={{ p: '3px', borderBottom: '1px solid #eef2f6', textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
                     <IconButton size="small" onClick={() => removeLine(line.id)} sx={{ p: 0.3, color: '#ef4444', '&:hover': { bgcolor: '#fee2e2' } }}>
                       <DeleteIcon sx={{ fontSize: '0.85rem' }} />
                     </IconButton>
@@ -1045,19 +1649,25 @@ export default function SalesReturn() {
               <Typography sx={{ fontWeight: 700, fontSize: '0.8rem', color: '#475569', mb: 1.2, letterSpacing: 0.3, textTransform: 'uppercase' }}>Adjustments</Typography>
               <Grid container spacing={1}>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Disc %" type="number" value={editingNumericCell?.field === 'otherDiscPercent' && !editingNumericCell?.lineId ? editingNumericCell.value : (otherDiscPercent === 0 ? '' : String(otherDiscPercent))} onFocus={(e) => setEditingNumericCell({ field: 'otherDiscPercent', value: otherDiscPercent === 0 ? '' : String(otherDiscPercent) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscPercent' ? editingNumericCell.value : ''; handleOtherDiscPercentChange(parseNumericInput(raw)); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal', max: 100 }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Other Disc %" type="number" value={editingNumericCell?.field === 'otherDiscPercent' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscPercent === 0 ? '' : String(otherDiscPercent))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscPercent', value: otherDiscPercent === 0 ? '' : String(otherDiscPercent) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscPercent' ? editingNumericCell.value : ''; handleOtherDiscPercentChange(parseNumericInput(raw)); setEditingNumericCell((prev) => (prev?.field === 'otherDiscPercent' ? null : prev)); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal', max: 100 }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Discount" type="number" value={editingNumericCell?.field === 'otherDiscount' && !editingNumericCell?.lineId ? editingNumericCell.value : (otherDiscount === 0 ? '' : String(otherDiscount))} onFocus={(e) => setEditingNumericCell({ field: 'otherDiscount', value: otherDiscount === 0 ? '' : String(otherDiscount) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscount' ? editingNumericCell.value : ''; setOtherDiscount(parseNumericInput(raw)); setOtherDiscPercent(0); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Other Discount" type="number" value={editingNumericCell?.field === 'otherDiscount' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscount === 0 ? '' : String(otherDiscount))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscount', value: otherDiscount === 0 ? '' : String(otherDiscount) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscount' ? editingNumericCell.value : ''; setOtherDiscount(parseNumericInput(raw)); setOtherDiscPercent(0); setEditingNumericCell((prev) => (prev?.field === 'otherDiscount' ? null : prev)); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Other Charges" type="number" value={editingNumericCell?.field === 'otherCharges' && !editingNumericCell?.lineId ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))} onFocus={(e) => setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Other Charges" type="number" value={editingNumericCell?.field === 'otherCharges' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setEditingNumericCell((prev) => (prev?.field === 'otherCharges' ? null : prev)); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={6}>
-                  <TextField size="small" label="Round Off" type="number" value={editingNumericCell?.field === 'roundOff' && !editingNumericCell?.lineId ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))} onFocus={(e) => setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) })} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setEditingNumericCell(null); }} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Freight Charge" type="number" value={editingNumericCell?.field === 'freightCharge' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (freightCharge === 0 ? '' : String(freightCharge))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'freightCharge', value: freightCharge === 0 ? '' : String(freightCharge) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'freightCharge' ? editingNumericCell.value : ''; setFreightCharge(parseNumericInput(raw)); setEditingNumericCell((prev) => (prev?.field === 'freightCharge' ? null : prev)); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                </Grid>
+                <Grid item xs={6}>
+                  <TextField size="small" label="Travel Charge" type="number" value={editingNumericCell?.field === 'lendAddLess' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (lendAddLess === 0 ? '' : String(lendAddLess))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'lendAddLess', value: lendAddLess === 0 ? '' : String(lendAddLess) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'lendAddLess' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'lendAddLess' ? editingNumericCell.value : ''; setLendAddLess(parseNumericInput(raw)); setEditingNumericCell((prev) => (prev?.field === 'lendAddLess' ? null : prev)); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                </Grid>
+                <Grid item xs={6}>
+                  <TextField size="small" label="Round Off" type="number" value={editingNumericCell?.field === 'roundOff' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))} onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) }); }} onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev)} onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setEditingNumericCell((prev) => (prev?.field === 'roundOff' ? null : prev)); }} onKeyDown={handleNumberKeyDown} inputProps={{ inputMode: 'decimal' }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
                 <Grid item xs={12}>
-                  <TextField size="small" label="Narration" value={narration} onChange={(e) => setNarration(e.target.value)} inputRef={narrationRef} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => saveButtonRef.current?.focus(), 50); } }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
+                  <TextField size="small" label="Narration" value={narration} onChange={(e) => setNarration(e.target.value)} inputRef={narrationRef} onFocus={handleTextFieldFocus} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => saveButtonRef.current?.focus(), 50); } }} InputLabelProps={{ shrink: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 } }} />
                 </Grid>
               </Grid>
             </Box>
@@ -1287,6 +1897,74 @@ export default function SalesReturn() {
           <Button variant="contained" onClick={confirmSelectRefItems} sx={{ textTransform: 'none', borderRadius: 1.5, bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' } }}>
             Confirm
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Batch Selection Dialog - same as Sales B2C */}
+      <Dialog
+        open={batchDialogOpen}
+        onClose={handleBatchDialogClose}
+        onKeyDown={handleBatchDialogKeyDown}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 2 } }}
+      >
+        <DialogTitle sx={{ bgcolor: '#f8fafc', borderBottom: '1px solid #e2e8f0', py: 1.5 }}>
+          <Typography sx={{ fontWeight: 700, fontSize: '0.95rem', color: '#1e293b' }}>Select Batch</Typography>
+          {pendingProductSelection && (
+            <Typography sx={{ fontSize: '0.82rem', color: '#64748b', mt: 0.3 }}>{pendingProductSelection.product.name}</Typography>
+          )}
+        </DialogTitle>
+        <DialogContent sx={{ p: 0 }}>
+          <TableContainer sx={{ maxHeight: 300 }}>
+            <Table stickyHeader size="small">
+              <TableHead>
+                <TableRow>
+                  {['Batch No', 'Expiry Date', 'Stock', 'P.Rate', 'Retail', 'Action'].map((label, ci) => (
+                    <TableCell key={ci} align={ci >= 2 && ci <= 4 ? 'right' : ci === 5 ? 'center' : 'left'}
+                      sx={{ bgcolor: '#f0fdfa', fontWeight: 600, fontSize: '0.72rem', color: '#0f766e', py: 1, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                      {label}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {availableBatches.map((batch, index) => (
+                  <TableRow
+                    key={batch.batchNumber}
+                    ref={(el) => { batchRowRefs.current[index] = el; }}
+                    hover
+                    sx={{
+                      cursor: 'pointer',
+                      '&:hover': { bgcolor: '#f0fdfa' },
+                      bgcolor: index === focusedBatchIndex ? '#ccfbf1 !important' : (index % 2 === 0 ? '#ffffff' : '#fafafa'),
+                      outline: index === focusedBatchIndex ? '2px solid #0f766e' : 'none',
+                      transition: 'all 0.1s',
+                    }}
+                    onClick={() => handleBatchSelect(batch)}
+                  >
+                    <TableCell sx={{ fontSize: '0.8rem', color: '#334155', py: 0.75 }}>
+                      {batch.batchNumber.length > 15 ? batch.batchNumber.substring(0, 15) + '...' : batch.batchNumber}
+                    </TableCell>
+                    <TableCell sx={{ fontSize: '0.8rem', color: '#475569', py: 0.75 }}>{batch.expiryDate || '-'}</TableCell>
+                    <TableCell align="right" sx={{ fontSize: '0.8rem', color: '#1e293b', py: 0.75, fontWeight: 600 }}>{batch.quantity}</TableCell>
+                    <TableCell align="right" sx={{ fontSize: '0.8rem', color: '#64748b', py: 0.75 }}>{batch.purchasePrice.toFixed(2)}</TableCell>
+                    <TableCell align="right" sx={{ fontSize: '0.8rem', color: '#1e293b', py: 0.75, fontWeight: 600 }}>{batch.retail.toFixed(2)}</TableCell>
+                    <TableCell align="center" sx={{ py: 0.75 }}>
+                      <Button size="small" variant="contained"
+                        onClick={(e) => { e.stopPropagation(); handleBatchSelect(batch); }}
+                        sx={{ minWidth: 'auto', px: 1.5, py: 0.25, fontSize: '0.7rem', borderRadius: 1, boxShadow: 'none', bgcolor: '#0f766e', '&:hover': { bgcolor: '#115e59' } }}>
+                        Select
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </DialogContent>
+        <DialogActions sx={{ bgcolor: '#f8fafc', borderTop: '1px solid #e2e8f0', px: 2, py: 1 }}>
+          <Button onClick={handleBatchDialogClose} sx={{ textTransform: 'none', borderRadius: 1.5, color: '#64748b' }}>Cancel</Button>
         </DialogActions>
       </Dialog>
     </Box>

@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import KeepAliveOutlet from '../components/KeepAliveOutlet';
+import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import AppBar from '@mui/material/AppBar';
 import Box from '@mui/material/Box';
 import Drawer from '@mui/material/Drawer';
@@ -155,7 +154,7 @@ export default function MainLayout() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     FILE: true,
     MASTER: true,
-    ENTRY: false,
+    ENTRY: true,
     REPORT: false,
     UTILITIES: true,
     HELP: true,
@@ -459,7 +458,7 @@ export default function MainLayout() {
           overflow: 'auto',
         }}
       >
-        <KeepAliveOutlet />
+        <Outlet />
       </Box>
     </Box>
   );

@@ -19,6 +19,7 @@ export interface ISalesInvoiceItem extends Document {
   vatAmount: number;
   totalAmount: number;
   costPriceAtSale: number;
+  batchNumber?: string;
 }
 
 const SalesInvoiceItemSchema = new Schema<ISalesInvoiceItem>(
@@ -41,6 +42,7 @@ const SalesInvoiceItemSchema = new Schema<ISalesInvoiceItem>(
     vatAmount: { type: Number, default: 0 },
     totalAmount: { type: Number, required: true },
     costPriceAtSale: { type: Number, default: 0 },
+    batchNumber: { type: String },
   },
   { _id: true }
 );

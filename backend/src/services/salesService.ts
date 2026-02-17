@@ -1571,6 +1571,8 @@ export interface CreateSalesReturnInput {
   items: SalesReturnLineItem[];
   otherDiscount?: number;
   otherCharges?: number;
+  freightCharge?: number;
+  lendAddLess?: number;
   roundOff?: number;
   narration?: string;
   createdBy?: string;
@@ -1585,6 +1587,20 @@ export async function getNextReturnInvoiceNo(companyId: string, financialYearId:
   const match = last.invoiceNo.match(/-(\d+)$/);
   const num = match ? parseInt(match[1], 10) + 1 : 1;
   return `${prefix}-${num.toString().padStart(6, '0')}`;
+}
+
+export async function listSalesReturns(companyId: string, financialYearId: string) {
+  const invoices = await SalesInvoice.find({ companyId, financialYearId, type: 'Return' })
+    .sort({ createdAt: -1 })
+    .limit(500)
+    .lean();
+  return invoices.map((inv) => ({
+    _id: inv._id.toString(),
+    invoiceNo: inv.invoiceNo,
+    date: inv.date,
+    customerName: inv.customerName,
+    totalAmount: inv.totalAmount,
+  }));
 }
 
 export async function createSalesReturn(input: CreateSalesReturnInput): Promise<{ invoiceId: string; invoiceNo: string }> {
@@ -1670,16 +1686,18 @@ export async function createSalesReturn(input: CreateSalesReturnInput): Promise<
 
   const otherDiscount = input.otherDiscount ?? 0;
   const otherCharges = input.otherCharges ?? 0;
+  const freightCharge = input.freightCharge ?? 0;
+  const lendAddLess = input.lendAddLess ?? 0;
   const roundOff = input.roundOff ?? 0;
   const isVat = input.vatType !== 'NonVat';
-  const netAdjustments = otherCharges + roundOff - otherDiscount;
+  const netAdjustments = otherCharges + freightCharge + lendAddLess + roundOff - otherDiscount;
   const vatFromAdjustments = isVat && netAdjustments !== 0
     ? parseFloat((netAdjustments * vatRatePct / (100 + vatRatePct)).toFixed(2))
     : 0;
   const totalVat = parseFloat((itemsVat + vatFromAdjustments).toFixed(2));
   const taxableAmount = itemsGross - itemsDiscount;
   const subTotal = (input.taxMode === 'inclusive' && isVat) ? taxableAmount : (taxableAmount + itemsVat);
-  const grandTotal = subTotal - otherDiscount + otherCharges + roundOff;
+  const grandTotal = subTotal - otherDiscount + otherCharges + freightCharge + lendAddLess + roundOff;
 
   const invoiceNo = await getNextReturnInvoiceNo(input.companyId, input.financialYearId);
 
@@ -1705,8 +1723,8 @@ export async function createSalesReturn(input: CreateSalesReturnInput): Promise<
     vatAmount: totalVat,
     otherDiscount,
     otherCharges,
-    freightCharge: 0,
-    lendAddLess: 0,
+    freightCharge,
+    lendAddLess,
     roundOff,
     totalAmount: grandTotal,
     cashReceived: 0,
@@ -1868,6 +1886,8 @@ export async function getSalesReturn(invoiceId: string, companyId: string) {
     })),
     otherDiscount: invoice.otherDiscount,
     otherCharges: invoice.otherCharges,
+    freightCharge: invoice.freightCharge,
+    lendAddLess: invoice.lendAddLess,
     roundOff: invoice.roundOff,
     totalAmount: invoice.totalAmount,
     narration: invoice.narration,

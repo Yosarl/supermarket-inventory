@@ -226,11 +226,18 @@ export const salesApi = {
     }>;
     otherDiscount?: number;
     otherCharges?: number;
+    freightCharge?: number;
+    lendAddLess?: number;
     roundOff?: number;
     narration?: string;
   }) => api.post<{ success: boolean; data: { invoiceId: string; invoiceNo: string } }>('/sales/return', data),
   searchSalesReturn: (companyId: string, invoiceNo: string) =>
     api.get('/sales/return/search', { params: { companyId, invoiceNo } }),
+  listSalesReturns: (companyId: string, financialYearId: string) =>
+    api.get<{ success: boolean; data: Array<{ _id: string; invoiceNo: string; date: string; customerName?: string; totalAmount?: number }> }>(
+      '/sales/returns',
+      { params: { companyId, financialYearId } }
+    ),
   getSalesReturn: (invoiceId: string, companyId: string) =>
     api.get(`/sales/return/${invoiceId}`, { params: { companyId } }),
   deleteSalesReturn: (invoiceId: string, companyId: string) =>

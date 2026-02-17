@@ -304,6 +304,25 @@ export async function searchSalesReturnByInvoiceNo(
   }
 }
 
+export async function listSalesReturns(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    const financialYearId = req.query.financialYearId as string;
+    if (!companyId || !financialYearId) {
+      res.status(400).json({ success: false, message: 'Company ID and Financial Year ID required' });
+      return;
+    }
+    const data = await salesService.listSalesReturns(companyId, financialYearId);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getSalesReturn(
   req: AuthRequest,
   res: Response,
