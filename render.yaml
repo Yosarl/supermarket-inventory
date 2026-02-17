@@ -1,17 +1,34 @@
-# Render Blueprint: deploy frontend as a static site
+# Render Blueprint: frontend (static) + backend (Node)
 # https://render.com/docs/blueprint-spec
 
 services:
+  # ─── Backend (Node/Express) ─────────────────────────────────
+  - type: web
+    name: supermarket-inventory-backend
+    runtime: node
+    rootDir: backend
+    # Install devDependencies so @types/* and tsc are available for build
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+
+  # ─── Frontend (static site) ──────────────────────────────────
   - type: web
     name: supermarket-inventory-frontend
     runtime: static
-    # Run build from repo root so "build:web" is always found (frontend/package.json)
     buildCommand: cd frontend && npm install && npm run build:web
     staticPublishPath: frontend/dist
     envVars:
       - key: VITE_BASE_PATH
         value: /
-      # Set when your backend is deployed (e.g. https://your-backend.onrender.com/api)
       - key: VITE_API_URL
         sync: false
     routes:
