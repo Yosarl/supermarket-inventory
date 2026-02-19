@@ -138,7 +138,7 @@ export default function SalesReturn() {
   const [editingNumericCell, setEditingNumericCell] = useState<{ lineId?: string; field: string; value: string } | null>(null);
   const [invoiceList, setInvoiceList] = useState<Array<{ _id: string; invoiceNo: string; date: string; customerName?: string; totalAmount?: number }>>([]);
   const [currentNavIndex, setCurrentNavIndex] = useState<number>(-1);
-  const [salesAccountName, setSalesAccountName] = useState<string>('');
+  const [, setSalesAccountName] = useState<string>('');
   const [batchDialogOpen, setBatchDialogOpen] = useState(false);
   const [focusedBatchIndex, setFocusedBatchIndex] = useState(0);
   const [availableBatches, setAvailableBatches] = useState<{
@@ -403,7 +403,6 @@ export default function SalesReturn() {
         const name = typeof it.productId === 'object' && (it.productId as { name?: string }).name ? (it.productId as { name: string }).name : (it.description || '');
         const price = it.unitPrice ?? 0;
         const qty = it.quantity ?? 0;
-        const total = it.totalAmount ?? qty * price;
         const disc = it.discount ?? 0;
         const gross = qty * price;
         const net = gross - disc;
@@ -413,11 +412,12 @@ export default function SalesReturn() {
         const uname = (it.unitName as string) || 'Pcs';
         const uid = (it.unitId as string) || (it as { unitId?: string }).unitId || 'pcs';
         const availableUnits: UnitOption[] = [{ id: uid, name: uname }];
+        const itWithImei = it as { imei?: string };
         return {
           id: `loaded-${idx}-${Date.now()}`,
           productId: pid,
           productCode: (it.productCode as string) || '',
-          imei: (it.imei as string) || '',
+          imei: itWithImei.imei || '',
           name: name || '',
           unitId: uid,
           unitName: uname,
@@ -537,7 +537,6 @@ export default function SalesReturn() {
       const name = typeof it.productId === 'object' && (it.productId as { name?: string }).name ? (it.productId as { name: string }).name : (it.description || '');
       const price = it.unitPrice ?? 0;
       const qty = it.quantity ?? 0;
-      const total = it.totalAmount ?? qty * price;
       const disc = it.discount ?? 0;
       const gross = qty * price;
       const net = gross - disc;
@@ -547,11 +546,12 @@ export default function SalesReturn() {
       const uname = (it.unitName as string) || 'Pcs';
       const uid = (it as { unitId?: string }).unitId || 'pcs';
       const availableUnits: UnitOption[] = [{ id: uid, name: uname }];
+      const itWithImei = it as { imei?: string };
       return {
         id: `ref-${idx}-${Date.now()}`,
         productId: pid,
         productCode: (it.productCode as string) || '',
-        imei: (it.imei as string) || '',
+        imei: itWithImei.imei || '',
         name: name || '',
         unitId: uid,
         unitName: uname,
@@ -611,7 +611,7 @@ export default function SalesReturn() {
     setActiveLineId(null);
   }, []);
 
-  const addLine = useCallback(() => {
+  const _addLine = useCallback(() => {
     const newLine = emptyLine();
     setLines((prev) => [...prev, newLine]);
     return newLine.id;
@@ -1062,7 +1062,6 @@ export default function SalesReturn() {
         const name = typeof it.productId === 'object' && (it.productId as { name?: string }).name ? (it.productId as { name: string }).name : (it.description || '');
         const price = it.unitPrice ?? 0;
         const qty = it.quantity ?? 0;
-        const total = it.totalAmount ?? qty * price;
         const disc = it.discount ?? 0;
         const gross = qty * price;
         const net = gross - disc;
@@ -1072,11 +1071,12 @@ export default function SalesReturn() {
         const uname = (it.unitName as string) || 'Pcs';
         const uid = (it as { unitId?: string }).unitId || 'pcs';
         const availableUnits: UnitOption[] = [{ id: uid, name: uname }];
+        const itWithImei = it as { imei?: string };
         return {
           id: `loaded-${idx}-${Date.now()}`,
           productId: pid,
           productCode: (it.productCode as string) || '',
-          imei: (it.imei as string) || '',
+          imei: itWithImei.imei || '',
           name: name || '',
           unitId: uid,
           unitName: uname,
