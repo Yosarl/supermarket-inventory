@@ -1,6 +1,6 @@
 import mongoose, { Document, Schema } from 'mongoose';
 
-export interface IPurchaseBatch {
+export interface IOpeningStockBatch {
   productId: mongoose.Types.ObjectId;
   productCode: string;
   productName: string;
@@ -16,33 +16,23 @@ export interface IPurchaseBatch {
   multiUnitId?: string;
 }
 
-export interface IPurchaseInvoice extends Document {
+export interface IOpeningStockEntry extends Document {
   companyId: mongoose.Types.ObjectId;
   financialYearId: mongoose.Types.ObjectId;
-  invoiceNo: string;
-  supplierInvoiceNo?: string;
+  entryNo: string;
   date: Date;
-  supplierId?: mongoose.Types.ObjectId;
-  supplierName?: string;
-  paymentType?: 'Cash' | 'Credit';
-  cashAccountId?: mongoose.Types.ObjectId;
   vatType: 'Vat' | 'NonVat';
   taxMode?: 'inclusive' | 'exclusive';
   narration?: string;
-  batches: IPurchaseBatch[];
+  batches: IOpeningStockBatch[];
   totalAmount: number;
-  itemsDiscount: number;
-  otherDiscount: number;
-  otherCharges: number;
-  freightCharge: number;
-  roundOff: number;
   voucherId?: mongoose.Types.ObjectId;
   createdBy?: mongoose.Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
 }
 
-const PurchaseBatchSchema = new Schema<IPurchaseBatch>(
+const OpeningStockBatchSchema = new Schema<IOpeningStockBatch>(
   {
     productId: { type: Schema.Types.ObjectId, ref: 'Product', required: true },
     productCode: { type: String, default: '' },
@@ -61,38 +51,27 @@ const PurchaseBatchSchema = new Schema<IPurchaseBatch>(
   { _id: false }
 );
 
-const PurchaseInvoiceSchema = new Schema<IPurchaseInvoice>(
+const OpeningStockEntrySchema = new Schema<IOpeningStockEntry>(
   {
     companyId: { type: Schema.Types.ObjectId, ref: 'Company', required: true },
     financialYearId: { type: Schema.Types.ObjectId, ref: 'FinancialYear', required: true },
-    invoiceNo: { type: String, required: true },
-    supplierInvoiceNo: { type: String },
+    entryNo: { type: String, required: true },
     date: { type: Date, required: true },
-    supplierId: { type: Schema.Types.ObjectId, ref: 'LedgerAccount' },
-    supplierName: { type: String },
-    paymentType: { type: String, enum: ['Cash', 'Credit'] },
-    cashAccountId: { type: Schema.Types.ObjectId, ref: 'LedgerAccount' },
     vatType: { type: String, enum: ['Vat', 'NonVat'], default: 'Vat' },
     taxMode: { type: String, enum: ['inclusive', 'exclusive'], default: 'inclusive' },
     narration: { type: String },
-    batches: { type: [PurchaseBatchSchema], default: [] },
+    batches: { type: [OpeningStockBatchSchema], default: [] },
     totalAmount: { type: Number, default: 0 },
-    itemsDiscount: { type: Number, default: 0 },
-    otherDiscount: { type: Number, default: 0 },
-    otherCharges: { type: Number, default: 0 },
-    freightCharge: { type: Number, default: 0 },
-    roundOff: { type: Number, default: 0 },
     voucherId: { type: Schema.Types.ObjectId, ref: 'Voucher' },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
 );
 
-PurchaseInvoiceSchema.index({ companyId: 1, invoiceNo: 1 }, { unique: true });
-PurchaseInvoiceSchema.index({ companyId: 1, date: -1 });
-PurchaseInvoiceSchema.index({ companyId: 1, financialYearId: 1 });
+OpeningStockEntrySchema.index({ companyId: 1, entryNo: 1 }, { unique: true });
+OpeningStockEntrySchema.index({ companyId: 1, financialYearId: 1, date: -1 });
 
-export const PurchaseInvoice = mongoose.model<IPurchaseInvoice>(
-  'PurchaseInvoice',
-  PurchaseInvoiceSchema
+export const OpeningStockEntry = mongoose.model<IOpeningStockEntry>(
+  'OpeningStockEntry',
+  OpeningStockEntrySchema
 );

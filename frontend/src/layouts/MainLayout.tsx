@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import AppBar from '@mui/material/AppBar';
 import Box from '@mui/material/Box';
@@ -166,6 +166,18 @@ export default function MainLayout() {
   const cid = useAppSelector((s) => s.app.selectedCompanyId);
   const open = useAppSelector((s) => s.app.drawerOpen);
   const hasCompany = (user?.companyAccess?.length ?? 0) > 0;
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const wasOpenRef = useRef(open);
+
+  // When drawer closes, move focus to menu button before paint so focus is not inside
+  // an element that gets aria-hidden (avoids "Blocked aria-hidden" a11y warning).
+  useLayoutEffect(() => {
+    if (wasOpenRef.current && !open) {
+      wasOpenRef.current = false;
+      menuButtonRef.current?.focus();
+    }
+    wasOpenRef.current = open;
+  }, [open]);
 
   useEffect(() => {
     if (!user) return;
@@ -199,7 +211,7 @@ export default function MainLayout() {
     <Box sx={{ display: 'flex', minHeight: '100vh' }}>
       <AppBar position="fixed" sx={{ zIndex: 1201 }}>
         <Toolbar variant="dense" sx={{ minHeight: 36, height: 36, px: 1.5 }}>
-          <IconButton color="inherit" onClick={() => dispatch(toggleDrawer())} edge="start" sx={{ mr: 1 }}><MenuIcon fontSize="small" /></IconButton>
+          <IconButton ref={menuButtonRef} color="inherit" onClick={() => dispatch(toggleDrawer())} edge="start" sx={{ mr: 1 }} aria-label="Toggle menu"><MenuIcon fontSize="small" /></IconButton>
           <Typography variant="subtitle1" sx={{ fontWeight: 600, fontSize: '0.9rem', mr: 1.5 }}>Supermarket (UAE)</Typography>
           <Box
             component="button"
@@ -289,6 +301,96 @@ export default function MainLayout() {
           >
             <ShoppingCartIcon sx={{ fontSize: 16, flexShrink: 0 }} />
             <span className="btn-label">Purchase Entry</span>
+          </Box>
+          <Box
+            component="button"
+            onClick={() => navigate('/entry/purchase-order')}
+            title="Purchase Order"
+            sx={{
+              all: 'unset',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 0.4,
+              px: 0.5,
+              py: 0.2,
+              ml: 0.5,
+              borderRadius: 0.8,
+              fontSize: '0.65rem',
+              fontWeight: 600,
+              color: 'rgba(255,255,255,0.8)',
+              transition: 'all 0.2s',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              maxWidth: 22,
+              '&:hover': { maxWidth: 120, bgcolor: 'rgba(255,255,255,0.15)', color: '#fff', px: 0.8 },
+              '&:active': { bgcolor: 'rgba(255,255,255,0.25)' },
+              '& .btn-label': { opacity: 0, ml: 0, transition: 'opacity 0.2s, margin 0.2s' },
+              '&:hover .btn-label': { opacity: 1, ml: 0.3 },
+            }}
+          >
+            <ListAltIcon sx={{ fontSize: 16, flexShrink: 0 }} />
+            <span className="btn-label">Purchase Order</span>
+          </Box>
+          <Box
+            component="button"
+            onClick={() => navigate('/entry/purchase-return')}
+            title="Purchase Return"
+            sx={{
+              all: 'unset',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 0.4,
+              px: 0.5,
+              py: 0.2,
+              ml: 0.5,
+              borderRadius: 0.8,
+              fontSize: '0.65rem',
+              fontWeight: 600,
+              color: 'rgba(255,255,255,0.8)',
+              transition: 'all 0.2s',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              maxWidth: 22,
+              '&:hover': { maxWidth: 120, bgcolor: 'rgba(255,255,255,0.15)', color: '#fff', px: 0.8 },
+              '&:active': { bgcolor: 'rgba(255,255,255,0.25)' },
+              '& .btn-label': { opacity: 0, ml: 0, transition: 'opacity 0.2s, margin 0.2s' },
+              '&:hover .btn-label': { opacity: 1, ml: 0.3 },
+            }}
+          >
+            <AssignmentReturnIcon sx={{ fontSize: 16, flexShrink: 0 }} />
+            <span className="btn-label">Purchase Return</span>
+          </Box>
+          <Box
+            component="button"
+            onClick={() => navigate('/entry/quotation-sales')}
+            title="Sales Order"
+            sx={{
+              all: 'unset',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 0.4,
+              px: 0.5,
+              py: 0.2,
+              ml: 0.5,
+              borderRadius: 0.8,
+              fontSize: '0.65rem',
+              fontWeight: 600,
+              color: 'rgba(255,255,255,0.8)',
+              transition: 'all 0.2s',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              maxWidth: 22,
+              '&:hover': { maxWidth: 100, bgcolor: 'rgba(255,255,255,0.15)', color: '#fff', px: 0.8 },
+              '&:active': { bgcolor: 'rgba(255,255,255,0.25)' },
+              '& .btn-label': { opacity: 0, ml: 0, transition: 'opacity 0.2s, margin 0.2s' },
+              '&:hover .btn-label': { opacity: 1, ml: 0.3 },
+            }}
+          >
+            <ListAltIcon sx={{ fontSize: 16, flexShrink: 0 }} />
+            <span className="btn-label">Sales Order</span>
           </Box>
           <Box
             component="button"
@@ -402,7 +504,13 @@ export default function MainLayout() {
           </Box>
         </Toolbar>
       </AppBar>
-      <Drawer variant="temporary" open={open} onClose={() => dispatch(toggleDrawer())} ModalProps={{ keepMounted: true }} sx={{ zIndex: 1200, '& .MuiDrawer-paper': { width: W, top: 36, height: 'calc(100% - 36px)', boxSizing: 'border-box' }, '& .MuiBackdrop-root': { top: 36 } }}>
+      <Drawer
+        variant="temporary"
+        open={open}
+        onClose={() => dispatch(toggleDrawer())}
+        ModalProps={{ keepMounted: true }}
+        sx={{ zIndex: 1200, '& .MuiDrawer-paper': { width: W, top: 36, height: 'calc(100% - 36px)', boxSizing: 'border-box' }, '& .MuiBackdrop-root': { top: 36 } }}
+      >
         <Toolbar variant="dense" sx={{ minHeight: 0, p: 0 }} />
         <List sx={{ py: 0, overflow: 'auto' }}>
           {hasCompany && (

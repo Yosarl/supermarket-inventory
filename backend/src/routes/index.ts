@@ -17,6 +17,7 @@ import backupRoutes from './backupRoutes';
 import restoreRoutes from './restoreRoutes';
 import quotationRoutes from './quotationRoutes';
 import purchaseOrderRoutes from './purchaseOrderRoutes';
+import purchaseReturnRoutes from './purchaseReturnRoutes';
 import billReferenceRoutes from './billReferenceRoutes';
 
 const router = Router();
@@ -39,6 +40,7 @@ router.use('/backup', backupRoutes);
 router.use('/restore', restoreRoutes);
 router.use('/quotations', quotationRoutes);
 router.use('/purchase-orders', purchaseOrderRoutes);
+router.use('/purchase-returns', purchaseReturnRoutes);
 router.use('/bill-references', billReferenceRoutes);
 
 router.get('/health', (_req, res) => res.json({ ok: true }));

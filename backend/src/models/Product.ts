@@ -35,7 +35,6 @@ export interface IProduct extends Document {
   purchasePrice: number;
   specialPrice?: number;
   specialPrice2?: number;
-  expiryDate?: Date;
   imageUrl?: string;
   multiUnits: IMultiUnit[];
   allowBatches?: boolean;
@@ -90,7 +89,6 @@ const ProductSchema = new Schema<IProduct>(
     purchasePrice: { type: Number, default: 0 },
     specialPrice: { type: Number },
     specialPrice2: { type: Number },
-    expiryDate: { type: Date },
     imageUrl: { type: String },
     multiUnits: { type: [MultiUnitSchema], default: [] },
     allowBatches: { type: Boolean, default: true },

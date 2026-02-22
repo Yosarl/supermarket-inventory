@@ -29,6 +29,7 @@ export interface CreatePurchaseOrderInput {
     supplierId?: string;
     supplierName?: string;
     vatType?: 'Vat' | 'NonVat';
+    taxMode?: 'inclusive' | 'exclusive';
     narration?: string;
     batches: PurchaseOrderBatchInput[];
     itemsDiscount?: number;
@@ -90,6 +91,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput): Prom
         supplierId: input.supplierId ? new mongoose.Types.ObjectId(input.supplierId) : undefined,
         supplierName: input.supplierName,
         vatType: input.vatType || 'Vat',
+        taxMode: input.taxMode ?? 'inclusive',
         narration: input.narration,
         batches: batchDocs,
         totalAmount,
@@ -162,6 +164,7 @@ export async function updatePurchaseOrder(
                 supplierId: input.supplierId ? new mongoose.Types.ObjectId(input.supplierId) : undefined,
                 supplierName: input.supplierName,
                 vatType: input.vatType || 'Vat',
+                taxMode: input.taxMode ?? 'inclusive',
                 narration: input.narration,
                 batches: batchDocs,
                 totalAmount,
@@ -257,6 +260,7 @@ function formatDoc(doc: any) {
         supplierId: supplier && typeof supplier === 'object' ? supplier._id?.toString() : (doc.supplierId?.toString() || ''),
         supplierName: doc.supplierName || (supplier && typeof supplier === 'object' ? supplier.name : '') || '',
         vatType: doc.vatType || 'Vat',
+        taxMode: doc.taxMode ?? 'inclusive',
         narration: doc.narration || '',
         totalAmount: doc.totalAmount,
         itemsDiscount: doc.itemsDiscount ?? 0,

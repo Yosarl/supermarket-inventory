@@ -2,11 +2,24 @@ import mongoose from 'mongoose';
 import { Product } from '../models/Product';
 import { InventoryTransaction } from '../models/InventoryTransaction';
 import { PurchaseInvoice } from '../models/PurchaseInvoice';
+import { BatchSequence } from '../models/BatchSequence';
 import { LedgerAccount } from '../models/LedgerAccount';
 import { LedgerGroup } from '../models/LedgerGroup';
 import { AppError } from '../middlewares/errorHandler';
 import * as voucherService from './voucherService';
 import * as billReferenceService from './billReferenceService';
+
+/** Get next batch number for company (00001, 00002, ...). */
+export async function getNextBatchNumber(companyId: string): Promise<string> {
+  const companyOid = new mongoose.Types.ObjectId(companyId);
+  const doc = await BatchSequence.findOneAndUpdate(
+    { companyId: companyOid },
+    { $inc: { lastValue: 1 } },
+    { new: true, upsert: true }
+  ).lean();
+  const value = doc?.lastValue ?? 1;
+  return value.toString().padStart(5, '0');
+}
 
 export interface PurchaseBatchInput {
   productId: string;
@@ -32,6 +45,8 @@ export interface CreatePurchaseInput {
   date?: string;
   supplierId?: string;
   supplierName?: string;
+  paymentType?: 'Cash' | 'Credit';
+  cashAccountId?: string;
   vatType?: 'Vat' | 'NonVat';
   taxMode?: 'inclusive' | 'exclusive';
   narration?: string;
@@ -132,17 +147,35 @@ export async function createPurchase(input: CreatePurchaseInput): Promise<{
   const freightCharge = input.freightCharge ?? 0;
   const roundOff = input.roundOff ?? 0;
 
-  // 1. Save PurchaseInvoice header + batches
+  // 1. Save PurchaseInvoice header + batches (assign batch number 00001, 00002, ... when empty)
   let totalAmount = 0;
-  const batchDocs = input.batches.map((b) => {
+  const batchDocs: Array<{
+    productId: mongoose.Types.ObjectId;
+    productCode: string;
+    productName: string;
+    batchNumber: string;
+    purchasePrice: number;
+    quantity: number;
+    discAmount: number;
+    expiryDate?: Date;
+    retail: number;
+    wholesale: number;
+    specialPrice1: number;
+    specialPrice2: number;
+    multiUnitId?: string;
+  }> = [];
+  for (const b of input.batches) {
     const gross = b.quantity * b.purchasePrice;
     const disc = b.discAmount ?? 0;
     totalAmount += gross - disc;
-    return {
+    const batchNumber = (b.batchNumber?.trim())
+      ? b.batchNumber.trim()
+      : await getNextBatchNumber(input.companyId);
+    batchDocs.push({
       productId: new mongoose.Types.ObjectId(b.productId),
       productCode: b.productCode || '',
       productName: b.productName || '',
-      batchNumber: b.batchNumber || '',
+      batchNumber,
       purchasePrice: b.purchasePrice,
       quantity: b.quantity,
       discAmount: disc,
@@ -151,8 +184,9 @@ export async function createPurchase(input: CreatePurchaseInput): Promise<{
       wholesale: b.wholesale ?? 0,
       specialPrice1: b.specialPrice1 ?? 0,
       specialPrice2: b.specialPrice2 ?? 0,
-    };
-  });
+      multiUnitId: b.multiUnitId || undefined,
+    });
+  }
 
   await PurchaseInvoice.create({
     _id: purchaseId,
@@ -163,7 +197,10 @@ export async function createPurchase(input: CreatePurchaseInput): Promise<{
     date: purchaseDate,
     supplierId: input.supplierId ? new mongoose.Types.ObjectId(input.supplierId) : undefined,
     supplierName: input.supplierName,
+    paymentType: input.paymentType,
+    cashAccountId: input.cashAccountId ? new mongoose.Types.ObjectId(input.cashAccountId) : undefined,
     vatType: input.vatType || 'Vat',
+    taxMode: input.taxMode ?? 'inclusive',
     narration: input.narration,
     batches: batchDocs,
     totalAmount,
@@ -176,7 +213,9 @@ export async function createPurchase(input: CreatePurchaseInput): Promise<{
   });
 
   // 2. Create InventoryTransaction per batch + update product prices
-  for (const batch of input.batches) {
+  for (let i = 0; i < input.batches.length; i++) {
+    const batch = input.batches[i];
+    const batchDoc = batchDocs[i];
     const product = await Product.findById(batch.productId).lean();
     if (!product || product.companyId.toString() !== input.companyId) {
       throw new AppError(`Product not found: ${batch.productId}`, 404);
@@ -212,7 +251,7 @@ export async function createPurchase(input: CreatePurchaseInput): Promise<{
       costPrice: perPieceCost,
       referenceType: 'Purchase',
       referenceId: purchaseId,
-      narration: `Purchase ${input.invoiceNo}${batch.batchNumber ? ` Batch: ${batch.batchNumber}` : ''}`,
+      narration: `Purchase ${input.invoiceNo}${batchDoc.batchNumber ? ` Batch: ${batchDoc.batchNumber}` : ''}`,
       createdBy: input.createdBy ? new mongoose.Types.ObjectId(input.createdBy) : undefined,
     });
 
@@ -338,17 +377,35 @@ export async function updatePurchase(
 
   // 1b. Keep old voucher until new one is created (delete after step 4)
 
-  // 2. Update PurchaseInvoice header + batches
+  // 2. Update PurchaseInvoice header + batches (assign batch number 00001, 00002, ... when empty)
   let totalAmount = 0;
-  const batchDocs = input.batches.map((b) => {
+  const batchDocs: Array<{
+    productId: mongoose.Types.ObjectId;
+    productCode: string;
+    productName: string;
+    batchNumber: string;
+    purchasePrice: number;
+    quantity: number;
+    discAmount: number;
+    expiryDate?: Date;
+    retail: number;
+    wholesale: number;
+    specialPrice1: number;
+    specialPrice2: number;
+    multiUnitId?: string;
+  }> = [];
+  for (const b of input.batches) {
     const gross = b.quantity * b.purchasePrice;
     const disc = b.discAmount ?? 0;
     totalAmount += gross - disc;
-    return {
+    const batchNumber = (b.batchNumber?.trim())
+      ? b.batchNumber.trim()
+      : await getNextBatchNumber(input.companyId);
+    batchDocs.push({
       productId: new mongoose.Types.ObjectId(b.productId),
       productCode: b.productCode || '',
       productName: b.productName || '',
-      batchNumber: b.batchNumber || '',
+      batchNumber,
       purchasePrice: b.purchasePrice,
       quantity: b.quantity,
       discAmount: disc,
@@ -357,8 +414,9 @@ export async function updatePurchase(
       wholesale: b.wholesale ?? 0,
       specialPrice1: b.specialPrice1 ?? 0,
       specialPrice2: b.specialPrice2 ?? 0,
-    };
-  });
+      multiUnitId: b.multiUnitId || undefined,
+    });
+  }
 
   await PurchaseInvoice.updateOne(
     { _id: purchaseId },
@@ -369,7 +427,10 @@ export async function updatePurchase(
         date: purchaseDate,
         supplierId: input.supplierId ? new mongoose.Types.ObjectId(input.supplierId) : undefined,
         supplierName: input.supplierName,
+        paymentType: input.paymentType,
+        cashAccountId: input.cashAccountId ? new mongoose.Types.ObjectId(input.cashAccountId) : undefined,
         vatType: input.vatType || 'Vat',
+        taxMode: input.taxMode ?? 'inclusive',
         narration: input.narration,
         batches: batchDocs,
         totalAmount,
@@ -383,7 +444,9 @@ export async function updatePurchase(
   );
 
   // 3. Create new inventory transactions + update product prices
-  for (const batch of input.batches) {
+  for (let i = 0; i < input.batches.length; i++) {
+    const batch = input.batches[i];
+    const batchDoc = batchDocs[i];
     const product = await Product.findById(batch.productId).lean();
     if (!product || product.companyId.toString() !== input.companyId) {
       throw new AppError(`Product not found: ${batch.productId}`, 404);
@@ -417,7 +480,7 @@ export async function updatePurchase(
       costPrice: perPieceCost,
       referenceType: 'Purchase',
       referenceId: purchaseId,
-      narration: `Purchase ${input.invoiceNo}${batch.batchNumber ? ` Batch: ${batch.batchNumber}` : ''}`,
+      narration: `Purchase ${input.invoiceNo}${batchDoc.batchNumber ? ` Batch: ${batchDoc.batchNumber}` : ''}`,
       createdBy: input.createdBy ? new mongoose.Types.ObjectId(input.createdBy) : undefined,
     });
 
@@ -554,6 +617,13 @@ async function createPurchaseVoucher(
     throw new AppError('Supplier/Cash ledger not found. Cannot post purchase to ledger.', 400);
   }
 
+  // When payment type is Cash and user selected a Supplier, we pay from cash: Debit Supplier, Credit Cash
+  const payFromCash = input.paymentType === 'Cash' && input.cashAccountId && input.supplierId && input.cashAccountId !== input.supplierId;
+  const cashLedger = payFromCash ? await LedgerAccount.findById(input.cashAccountId) : null;
+  if (payFromCash && !cashLedger) {
+    throw new AppError('Cash account not found. Cannot post purchase as cash payment.', 400);
+  }
+
   const vatLedger = isVat && totalVat > 0
     ? await findOrCreateVatInputLedger(companyId) : null;
 
@@ -593,13 +663,29 @@ async function createPurchaseVoucher(
     });
   }
 
-  // Credit: Supplier/Cash Account (grand total = what we owe/pay)
+  // Credit Supplier with grandTotal (records purchase payable)
   voucherLines.push({
     ledgerAccountId: supplierLedger._id.toString(),
     debitAmount: 0,
     creditAmount: grandTotal,
     narration: `Purchase ${invoiceNo}`,
   });
+
+  // When Cash + Supplier: settle payable immediately (same pattern as B2C customer + cash)
+  if (payFromCash && cashLedger) {
+    voucherLines.push({
+      ledgerAccountId: cashLedger._id.toString(),
+      debitAmount: 0,
+      creditAmount: grandTotal,
+      narration: `Purchase ${invoiceNo} - Cash Payment`,
+    });
+    voucherLines.push({
+      ledgerAccountId: supplierLedger._id.toString(),
+      debitAmount: grandTotal,
+      creditAmount: 0,
+      narration: `Purchase ${invoiceNo} - Cash Payment`,
+    });
+  }
 
   // Credit: Discount on Purchase (row-level discounts reduce cost)
   if (discountOnPurchaseLedger && itemsDiscount > 0) {
@@ -651,19 +737,25 @@ async function createPurchaseVoucher(
     });
   }
 
-  // Ensure voucher balances: absorb rounding errors in supplier line (up to 0.50); larger = bug
+  // Ensure voucher balances: absorb rounding errors into payment line (cash or supplier credit)
   const totalDebit = voucherLines.reduce((s, l) => s + l.debitAmount, 0);
   const totalCredit = voucherLines.reduce((s, l) => s + l.creditAmount, 0);
   const diff = parseFloat((totalDebit - totalCredit).toFixed(2));
-  if (Math.abs(diff) > 0.01) {
-    if (Math.abs(diff) > 0.50) {
-      throw new AppError(`Voucher unbalanced: debit ${totalDebit.toFixed(2)} vs credit ${totalCredit.toFixed(2)}. Check amounts.`, 400);
-    }
-    const supplierLine = voucherLines.find((l) => l.ledgerAccountId === supplierLedger._id.toString() && l.creditAmount > 0);
-    if (supplierLine) {
-      supplierLine.creditAmount = parseFloat((supplierLine.creditAmount + diff).toFixed(2));
+  if (Math.abs(diff) > 0.001) {
+    if (payFromCash && cashLedger) {
+      const cashLine = voucherLines.find((l) => l.ledgerAccountId === cashLedger._id.toString() && l.creditAmount > 0);
+      if (cashLine) {
+        cashLine.creditAmount = parseFloat((cashLine.creditAmount + diff).toFixed(2));
+      } else {
+        throw new AppError(`Voucher unbalanced: debit ${totalDebit.toFixed(2)} vs credit ${totalCredit.toFixed(2)}`, 400);
+      }
     } else {
-      throw new AppError(`Voucher unbalanced: debit ${totalDebit.toFixed(2)} vs credit ${totalCredit.toFixed(2)}`, 400);
+      const supplierLine = voucherLines.find((l) => l.ledgerAccountId === supplierLedger._id.toString() && l.creditAmount > 0);
+      if (supplierLine) {
+        supplierLine.creditAmount = parseFloat((supplierLine.creditAmount + diff).toFixed(2));
+      } else {
+        throw new AppError(`Voucher unbalanced: debit ${totalDebit.toFixed(2)} vs credit ${totalCredit.toFixed(2)}`, 400);
+      }
     }
   }
 
@@ -710,6 +802,7 @@ export async function listPurchases(
 export async function getPurchaseById(id: string) {
   const doc = await PurchaseInvoice.findById(id)
     .populate('supplierId', 'name code')
+    .populate('cashAccountId', 'name code')
     .populate('voucherId', 'voucherNo')
     .lean();
   if (!doc) throw new AppError('Purchase invoice not found', 404);
@@ -720,6 +813,7 @@ export async function getPurchaseById(id: string) {
 export async function getPurchaseByInvoiceNo(companyId: string, invoiceNo: string) {
   const doc = await PurchaseInvoice.findOne({ companyId, invoiceNo })
     .populate('supplierId', 'name code')
+    .populate('cashAccountId', 'name code')
     .populate('voucherId', 'voucherNo')
     .lean();
   if (!doc) throw new AppError('Purchase invoice not found', 404);
@@ -747,6 +841,7 @@ export async function getNextInvoiceNo(companyId: string): Promise<string> {
 function formatPurchaseDoc(doc: any) {
   const supplier = doc.supplierId as any;
   const voucher = doc.voucherId as any;
+  const cashAccount = doc.cashAccountId as any;
   return {
     _id: doc._id.toString(),
     companyId: doc.companyId.toString(),
@@ -756,7 +851,10 @@ function formatPurchaseDoc(doc: any) {
     date: doc.date.toISOString().split('T')[0],
     supplierId: supplier && typeof supplier === 'object' ? supplier._id?.toString() : (doc.supplierId?.toString() || ''),
     supplierName: doc.supplierName || (supplier && typeof supplier === 'object' ? supplier.name : '') || '',
+    paymentType: doc.paymentType ?? undefined,
+    cashAccountId: cashAccount && typeof cashAccount === 'object' ? cashAccount._id?.toString() : (doc.cashAccountId?.toString() || ''),
     vatType: doc.vatType || 'Vat',
+    taxMode: doc.taxMode ?? 'inclusive',
     narration: doc.narration || '',
     totalAmount: doc.totalAmount,
     itemsDiscount: doc.itemsDiscount ?? 0,
@@ -779,6 +877,7 @@ function formatPurchaseDoc(doc: any) {
       wholesale: b.wholesale ?? 0,
       specialPrice1: b.specialPrice1 ?? 0,
       specialPrice2: b.specialPrice2 ?? 0,
+      multiUnitId: b.multiUnitId || undefined,
     })),
   };
 }

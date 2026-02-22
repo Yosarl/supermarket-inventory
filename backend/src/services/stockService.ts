@@ -244,7 +244,7 @@ async function getAvgStockReport(
       wholesalePrice: prod.wholesalePrice ?? 0,
       specialPrice1: prod.specialPrice ?? 0,
       specialPrice2: prod.specialPrice2 ?? 0,
-      expiryDate: prod.expiryDate ? new Date(prod.expiryDate).toISOString().split('T')[0] : null,
+      expiryDate: null,
       branch: 'MAIN BRANCH',
       sellerName: sellerUserId ? userMap.get(sellerUserId) ?? 'N/A' : 'N/A',
     };
@@ -373,7 +373,7 @@ async function getBatchWiseReport(
           wholesalePrice: prod.wholesalePrice ?? 0,
           specialPrice1: prod.specialPrice ?? 0,
           specialPrice2: prod.specialPrice2 ?? 0,
-          expiryDate: prod.expiryDate ? new Date(prod.expiryDate).toISOString().split('T')[0] : null,
+          expiryDate: null,
           branch: 'MAIN BRANCH',
           sellerName: sellerUserId ? userMap.get(sellerUserId) ?? 'N/A' : 'N/A',
         });
@@ -420,7 +420,7 @@ async function getBatchWiseReport(
             wholesalePrice: prod.wholesalePrice ?? 0,
             specialPrice1: prod.specialPrice ?? 0,
             specialPrice2: prod.specialPrice2 ?? 0,
-            expiryDate: prod.expiryDate ? new Date(prod.expiryDate).toISOString().split('T')[0] : null,
+            expiryDate: null,
             branch: 'MAIN BRANCH',
             sellerName: sellerUserId ? userMap.get(sellerUserId) ?? 'N/A' : 'N/A',
           });
@@ -448,7 +448,7 @@ async function getBatchWiseReport(
         wholesalePrice: prod.wholesalePrice ?? 0,
         specialPrice1: prod.specialPrice ?? 0,
         specialPrice2: prod.specialPrice2 ?? 0,
-        expiryDate: prod.expiryDate ? new Date(prod.expiryDate).toISOString().split('T')[0] : null,
+        expiryDate: null,
         branch: 'MAIN BRANCH',
         sellerName: sellerUserId ? userMap.get(sellerUserId) ?? 'N/A' : 'N/A',
       });
@@ -580,7 +580,7 @@ async function getLastPurchaseRateReport(
       wholesalePrice: prod.wholesalePrice ?? 0,
       specialPrice1: prod.specialPrice ?? 0,
       specialPrice2: prod.specialPrice2 ?? 0,
-      expiryDate: lp?.date ? new Date(lp.date).toISOString().split('T')[0] : (prod.expiryDate ? new Date(prod.expiryDate).toISOString().split('T')[0] : null),
+      expiryDate: lp?.date ? new Date(lp.date).toISOString().split('T')[0] : null,
       branch: 'MAIN BRANCH',
       sellerName: sellerUserId ? userMap.get(sellerUserId) ?? 'N/A' : 'N/A',
     };

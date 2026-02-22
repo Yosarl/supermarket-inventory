@@ -42,6 +42,11 @@ router.post(
   validate(salesController.createSalesReturnValidators),
   salesController.createSalesReturn
 );
+router.put(
+  '/return/:id',
+  validate(salesController.createSalesReturnValidators),
+  salesController.updateSalesReturn
+);
 router.delete('/return/:id', salesController.deleteSalesReturn);
 
 export default router;

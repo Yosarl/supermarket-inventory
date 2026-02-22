@@ -346,6 +346,30 @@ export async function getSalesReturn(
   }
 }
 
+export async function updateSalesReturn(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const invoiceId = req.params.id;
+    const companyId = req.body.companyId as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const userId = req.user!._id.toString();
+    const result = await salesService.updateSalesReturn(invoiceId, companyId, { ...req.body, createdBy: userId }, userId);
+    if (!result) {
+      res.status(404).json({ success: false, message: 'Sales return not found' });
+      return;
+    }
+    res.json({ success: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function deleteSalesReturn(
   req: AuthRequest,
   res: Response,

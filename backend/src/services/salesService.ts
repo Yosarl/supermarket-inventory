@@ -1591,7 +1591,7 @@ export async function getNextReturnInvoiceNo(companyId: string, financialYearId:
 
 export async function listSalesReturns(companyId: string, financialYearId: string) {
   const invoices = await SalesInvoice.find({ companyId, financialYearId, type: 'Return' })
-    .sort({ createdAt: -1 })
+    .sort({ date: 1, createdAt: 1 })
     .limit(500)
     .lean();
   return invoices.map((inv) => ({
@@ -1635,9 +1635,28 @@ export async function createSalesReturn(input: CreateSalesReturnInput): Promise<
     unitId?: string;
     unitName?: string;
     multiUnitId?: string;
+    batchNumber?: string;
   }> = [];
 
+  // Merge items with same product + same batch into one line (add to last batch, don't create another)
+  const mergedItems: typeof input.items = [];
+  const keyToIndex = new Map<string, number>();
   for (const item of input.items) {
+    const key = `${item.productId}|${item.batchNumber ?? ''}`;
+    const existing = keyToIndex.get(key);
+    if (existing !== undefined) {
+      mergedItems[existing] = {
+        ...mergedItems[existing],
+        quantity: (mergedItems[existing].quantity ?? 0) + (item.quantity ?? 0),
+        discount: (mergedItems[existing].discount ?? 0) + (item.discount ?? 0),
+      };
+    } else {
+      keyToIndex.set(key, mergedItems.length);
+      mergedItems.push({ ...item });
+    }
+  }
+
+  for (const item of mergedItems) {
     const product = await Product.findById(item.productId).lean();
     if (!product || product.companyId.toString() !== input.companyId) {
       throw new AppError(`Product not found: ${item.productId}`, 404);
@@ -1681,6 +1700,7 @@ export async function createSalesReturn(input: CreateSalesReturnInput): Promise<
       unitId: item.unitId,
       unitName: item.unitName,
       multiUnitId: item.multiUnitId,
+      batchNumber: item.batchNumber,
     });
   }
 
@@ -1698,6 +1718,15 @@ export async function createSalesReturn(input: CreateSalesReturnInput): Promise<
   const taxableAmount = itemsGross - itemsDiscount;
   const subTotal = (input.taxMode === 'inclusive' && isVat) ? taxableAmount : (taxableAmount + itemsVat);
   const grandTotal = subTotal - otherDiscount + otherCharges + freightCharge + lendAddLess + roundOff;
+
+  // Net amounts for adjustment ledgers (VAT-excluded when applicable, same as B2C)
+  const netFactor = isVat ? 100 / (100 + vatRatePct) : 1;
+  const otherDiscountNet = parseFloat((otherDiscount * netFactor).toFixed(2));
+  const otherChargesNet = parseFloat((otherCharges * netFactor).toFixed(2));
+  const freightChargeNet = parseFloat((freightCharge * netFactor).toFixed(2));
+  const lendAddLessNet = parseFloat((lendAddLess * netFactor).toFixed(2));
+  const roundOffNet = parseFloat((roundOff * netFactor).toFixed(2));
+  const netAdjustmentsNet = otherChargesNet + freightChargeNet + lendAddLessNet - otherDiscountNet + roundOffNet;
 
   const invoiceNo = await getNextReturnInvoiceNo(input.companyId, input.financialYearId);
 
@@ -1760,6 +1789,7 @@ export async function createSalesReturn(input: CreateSalesReturnInput): Promise<
       unitId: line.unitId,
       unitName: line.unitName,
       multiUnitId: line.multiUnitId,
+      batchNumber: line.batchNumber,
     });
   }
 
@@ -1792,27 +1822,33 @@ export async function createSalesReturn(input: CreateSalesReturnInput): Promise<
     });
   }
 
-  // Ledger: Debit Sales Return, Credit Customer (on account) or Credit Cash (cash refund)
+  // Ledger: Debit Sales Return, adjustment ledgers (reversed from sales), Debit VAT; Credit Customer/Cash
   const salesReturnLedger = await findOrCreateSpecialLedger(input.companyId, 'Sales Returns', 'Expense', 'Expense');
   const vatLedger = isVat ? await findOrCreateVatLedger(input.companyId) : null;
   const customerLedger = input.customerId ? await LedgerAccount.findById(input.customerId) : null;
   const cashLedger = input.cashAccountId ? await LedgerAccount.findById(input.cashAccountId) : null;
   const creditLedger = cashLedger || customerLedger;
 
+  // Same ledger names as B2C for adjustment details
+  const otherDiscountLedger = otherDiscount > 0 ? await findOrCreateSpecialLedger(input.companyId, 'Other Discount on Sales', 'Expense', 'Expense') : null;
+  const otherChargesLedger = otherCharges > 0 ? await findOrCreateSpecialLedger(input.companyId, 'Other Charges on Sales', 'Revenue', 'Income') : null;
+  const freightChargesLedger = freightCharge > 0 ? await findOrCreateSpecialLedger(input.companyId, 'Freight Charges on Sales', 'Revenue', 'Income') : null;
+  const travelChargesLedger = lendAddLess > 0 ? await findOrCreateSpecialLedger(input.companyId, 'Travel Charges on Sales', 'Revenue', 'Income') : null;
+  const roundOffLedger = Math.abs(roundOff) > 0.001 ? await findOrCreateSpecialLedger(input.companyId, 'Round Off on Sales', 'Expense', 'Expense') : null;
+
   if (creditLedger) {
     const voucherLines: Array<{ ledgerAccountId: string; debitAmount: number; creditAmount: number; narration?: string }> = [];
+
+    // Debit Sales Return (net of VAT and adjustment reversals)
+    const salesReturnDebit = grandTotal - totalVat - netAdjustmentsNet;
     voucherLines.push({
       ledgerAccountId: salesReturnLedger._id.toString(),
-      debitAmount: grandTotal,
+      debitAmount: salesReturnDebit,
       creditAmount: 0,
       narration: `Sales Return ${invoiceNo}`,
     });
-    voucherLines.push({
-      ledgerAccountId: creditLedger._id.toString(),
-      debitAmount: 0,
-      creditAmount: grandTotal,
-      narration: cashLedger ? `Sales Return ${invoiceNo} - Cash Refund` : `Sales Return ${invoiceNo} - On Account`,
-    });
+
+    // Debit VAT (reverse output VAT)
     if (vatLedger && totalVat > 0) {
       voucherLines.push({
         ledgerAccountId: vatLedger._id.toString(),
@@ -1821,14 +1857,66 @@ export async function createSalesReturn(input: CreateSalesReturnInput): Promise<
         narration: `Sales Return ${invoiceNo} - VAT`,
       });
     }
-    const totalDebit = voucherLines.reduce((s, l) => s + l.debitAmount, 0);
-    const totalCredit = voucherLines.reduce((s, l) => s + l.creditAmount, 0);
+
+    // Adjustment ledgers (reverse of B2C sale): Credit Other Discount, Debit Other Charges, Debit Freight, Debit Travel, Round Off reversed
+    if (otherDiscountLedger && otherDiscount > 0) {
+      voucherLines.push({
+        ledgerAccountId: otherDiscountLedger._id.toString(),
+        debitAmount: 0,
+        creditAmount: otherDiscountNet,
+        narration: `Sales Return ${invoiceNo} - Other Discount`,
+      });
+    }
+    if (otherChargesLedger && otherCharges > 0) {
+      voucherLines.push({
+        ledgerAccountId: otherChargesLedger._id.toString(),
+        debitAmount: otherChargesNet,
+        creditAmount: 0,
+        narration: `Sales Return ${invoiceNo} - Other Charges`,
+      });
+    }
+    if (freightChargesLedger && freightCharge > 0) {
+      voucherLines.push({
+        ledgerAccountId: freightChargesLedger._id.toString(),
+        debitAmount: freightChargeNet,
+        creditAmount: 0,
+        narration: `Sales Return ${invoiceNo} - Freight Charges`,
+      });
+    }
+    if (travelChargesLedger && lendAddLess > 0) {
+      voucherLines.push({
+        ledgerAccountId: travelChargesLedger._id.toString(),
+        debitAmount: lendAddLessNet,
+        creditAmount: 0,
+        narration: `Sales Return ${invoiceNo} - Travel Charges`,
+      });
+    }
+    if (roundOffLedger && Math.abs(roundOff) > 0.001) {
+      voucherLines.push({
+        ledgerAccountId: roundOffLedger._id.toString(),
+        debitAmount: roundOffNet > 0 ? roundOffNet : 0,
+        creditAmount: roundOffNet < 0 ? Math.abs(roundOffNet) : 0,
+        narration: `Sales Return ${invoiceNo} - Round Off`,
+      });
+    }
+
+    // Credit Customer/Cash (refund)
+    voucherLines.push({
+      ledgerAccountId: creditLedger._id.toString(),
+      debitAmount: 0,
+      creditAmount: grandTotal,
+      narration: cashLedger ? `Sales Return ${invoiceNo} - Cash Refund` : `Sales Return ${invoiceNo} - On Account`,
+    });
+
+    let totalDebit = voucherLines.reduce((s, l) => s + l.debitAmount, 0);
+    let totalCredit = voucherLines.reduce((s, l) => s + l.creditAmount, 0);
     const diff = Math.abs(totalDebit - totalCredit);
     if (diff > 0.01) {
+      // Adjust Sales Return debit (first line) to balance
       if (totalDebit > totalCredit) {
-        voucherLines[voucherLines.length - 1].debitAmount = (voucherLines[voucherLines.length - 1].debitAmount || 0) - diff;
+        voucherLines[0].debitAmount = (voucherLines[0].debitAmount || 0) - diff;
       } else {
-        voucherLines[voucherLines.length - 1].creditAmount = (voucherLines[voucherLines.length - 1].creditAmount || 0) - diff;
+        voucherLines[0].debitAmount = (voucherLines[0].debitAmount || 0) + diff;
       }
     }
     const v = await voucherService.createAndPost({
@@ -1844,6 +1932,332 @@ export async function createSalesReturn(input: CreateSalesReturnInput): Promise<
   }
 
   return { invoiceId: invoiceId.toString(), invoiceNo };
+}
+
+export async function updateSalesReturn(
+  invoiceId: string,
+  companyId: string,
+  input: CreateSalesReturnInput,
+  userId: string
+): Promise<{ invoiceId: string; invoiceNo: string } | null> {
+  const existing = await SalesInvoice.findOne({ _id: invoiceId, companyId, type: 'Return' });
+  if (!existing) return null;
+
+  const company = await Company.findById(companyId);
+  if (!company) throw new AppError('Company not found', 404);
+  if (input.returnType === 'ByRef' && !input.originalInvoiceId) {
+    throw new AppError('Original invoice is required when return type is By Ref', 400);
+  }
+
+  const vatRatePct = input.vatType === 'NonVat' ? 0 : (company.vatConfig?.standardRate ?? 5);
+  const returnDate = input.date ? new Date(input.date) : existing.date;
+  const invoiceNo = existing.invoiceNo;
+
+  // Remove old effects: inventory and ledger
+  await InventoryTransaction.deleteMany({ referenceId: existing._id, referenceType: 'SalesInvoice' });
+  await SalesInvoiceItem.deleteMany({ invoiceId: existing._id });
+  if (existing.voucherId) {
+    try {
+      const { LedgerEntry } = await import('../models/LedgerEntry');
+      await LedgerEntry.deleteMany({ voucherId: existing.voucherId });
+      await Voucher.deleteOne({ _id: existing.voucherId });
+    } catch (e) {
+      console.error(`[Sales Return Update] Failed to remove voucher ${existing.voucherId}:`, (e as Error).message || e);
+    }
+  }
+
+  let itemsGross = 0;
+  let itemsDiscount = 0;
+  let itemsVat = 0;
+
+  const lineItems: Array<{
+    productId: mongoose.Types.ObjectId;
+    productCode: string;
+    imei?: string;
+    description: string;
+    quantity: number;
+    unitPrice: number;
+    grossAmount: number;
+    discountPercent: number;
+    discount: number;
+    netAmount: number;
+    vatRate: number;
+    vatAmount: number;
+    totalAmount: number;
+    costPriceAtSale: number;
+    unitId?: string;
+    unitName?: string;
+    multiUnitId?: string;
+    batchNumber?: string;
+  }> = [];
+
+  const mergedItems: typeof input.items = [];
+  const keyToIndex = new Map<string, number>();
+  for (const item of input.items) {
+    const key = `${item.productId}|${item.batchNumber ?? ''}`;
+    const existingIdx = keyToIndex.get(key);
+    if (existingIdx !== undefined) {
+      mergedItems[existingIdx] = {
+        ...mergedItems[existingIdx],
+        quantity: (mergedItems[existingIdx].quantity ?? 0) + (item.quantity ?? 0),
+        discount: (mergedItems[existingIdx].discount ?? 0) + (item.discount ?? 0),
+      };
+    } else {
+      keyToIndex.set(key, mergedItems.length);
+      mergedItems.push({ ...item });
+    }
+  }
+
+  for (const item of mergedItems) {
+    const product = await Product.findById(item.productId).lean();
+    if (!product || product.companyId.toString() !== input.companyId) {
+      throw new AppError(`Product not found: ${item.productId}`, 404);
+    }
+    const qty = item.quantity;
+    const price = item.unitPrice;
+    const gross = qty * price;
+    const discPct = item.discountPercent ?? 0;
+    const disc = item.discount ?? (gross * discPct / 100);
+    const net = gross - disc;
+    const vatRate = input.vatType === 'NonVat' ? 0 : vatRatePct;
+    const taxMode = input.taxMode ?? 'exclusive';
+    let vatAmt: number;
+    let total: number;
+    if (input.vatType === 'Vat' && taxMode === 'inclusive' && vatRate > 0) {
+      vatAmt = parseFloat((net * vatRate / (100 + vatRate)).toFixed(2));
+      total = parseFloat(net.toFixed(2));
+    } else {
+      vatAmt = parseFloat((net * (vatRate / 100)).toFixed(2));
+      total = parseFloat((net + vatAmt).toFixed(2));
+    }
+    itemsGross += gross;
+    itemsDiscount += disc;
+    itemsVat += vatAmt;
+
+    lineItems.push({
+      productId: product._id,
+      productCode: item.productCode ?? product.code ?? '',
+      imei: item.imei ?? '',
+      description: item.description ?? product.name,
+      quantity: qty,
+      unitPrice: price,
+      grossAmount: gross,
+      discountPercent: discPct,
+      discount: disc,
+      netAmount: net,
+      vatRate,
+      vatAmount: vatAmt,
+      totalAmount: total,
+      costPriceAtSale: product.purchasePrice ?? 0,
+      unitId: item.unitId,
+      unitName: item.unitName,
+      multiUnitId: item.multiUnitId,
+      batchNumber: item.batchNumber,
+    });
+  }
+
+  const otherDiscount = input.otherDiscount ?? 0;
+  const otherCharges = input.otherCharges ?? 0;
+  const freightCharge = input.freightCharge ?? 0;
+  const lendAddLess = input.lendAddLess ?? 0;
+  const roundOff = input.roundOff ?? 0;
+  const isVat = input.vatType !== 'NonVat';
+  const netAdjustments = otherCharges + freightCharge + lendAddLess + roundOff - otherDiscount;
+  const vatFromAdjustments = isVat && netAdjustments !== 0
+    ? parseFloat((netAdjustments * vatRatePct / (100 + vatRatePct)).toFixed(2))
+    : 0;
+  const totalVat = parseFloat((itemsVat + vatFromAdjustments).toFixed(2));
+  const taxableAmount = itemsGross - itemsDiscount;
+  const subTotal = (input.taxMode === 'inclusive' && isVat) ? taxableAmount : (taxableAmount + itemsVat);
+  const grandTotal = subTotal - otherDiscount + otherCharges + freightCharge + lendAddLess + roundOff;
+
+  const netFactor = isVat ? 100 / (100 + vatRatePct) : 1;
+  const otherDiscountNet = parseFloat((otherDiscount * netFactor).toFixed(2));
+  const otherChargesNet = parseFloat((otherCharges * netFactor).toFixed(2));
+  const freightChargeNet = parseFloat((freightCharge * netFactor).toFixed(2));
+  const lendAddLessNet = parseFloat((lendAddLess * netFactor).toFixed(2));
+  const roundOffNet = parseFloat((roundOff * netFactor).toFixed(2));
+  const netAdjustmentsNet = otherChargesNet + freightChargeNet + lendAddLessNet - otherDiscountNet + roundOffNet;
+
+  for (const line of lineItems) {
+    await SalesInvoiceItem.create({
+      invoiceId: existing._id,
+      productId: line.productId,
+      productCode: line.productCode,
+      imei: line.imei,
+      description: line.description,
+      quantity: line.quantity,
+      unitPrice: line.unitPrice,
+      grossAmount: line.grossAmount,
+      discountPercent: line.discountPercent,
+      discount: line.discount,
+      netAmount: line.netAmount,
+      vatRate: line.vatRate,
+      vatAmount: line.vatAmount,
+      totalAmount: line.totalAmount,
+      costPriceAtSale: line.costPriceAtSale,
+      unitId: line.unitId,
+      unitName: line.unitName,
+      multiUnitId: line.multiUnitId,
+      batchNumber: line.batchNumber,
+    });
+  }
+
+  for (const line of lineItems) {
+    let stockQtyIn = line.quantity;
+    if (line.multiUnitId) {
+      const prod = await Product.findById(line.productId).lean();
+      if (prod?.multiUnits) {
+        const mu = prod.multiUnits.find((m: { multiUnitId?: string }) => m.multiUnitId === line.multiUnitId);
+        if (mu && (mu as { conversion?: number }).conversion && (mu as { conversion: number }).conversion > 0) {
+          stockQtyIn = line.quantity * (mu as { conversion: number }).conversion;
+        }
+      }
+    }
+
+    await InventoryTransaction.create({
+      companyId: input.companyId,
+      financialYearId: input.financialYearId,
+      productId: line.productId,
+      date: returnDate,
+      type: 'SalesReturn',
+      quantityIn: stockQtyIn,
+      quantityOut: 0,
+      costPrice: line.costPriceAtSale,
+      referenceType: 'SalesInvoice',
+      referenceId: existing._id,
+      narration: `Sales Return ${invoiceNo}`,
+      createdBy: userId,
+    });
+  }
+
+  await SalesInvoice.updateOne(
+    { _id: existing._id },
+    {
+      $set: {
+        date: returnDate,
+        customerId: input.customerId,
+        customerName: input.customerName ?? 'Walk-in',
+        customerAddress: input.customerAddress,
+        customerPhone: input.customerPhone,
+        cashAccountId: input.cashAccountId,
+        vatType: input.vatType ?? 'Vat',
+        taxMode: input.taxMode ?? 'exclusive',
+        grossAmount: itemsGross,
+        discountAmount: itemsDiscount,
+        taxableAmount: itemsGross - itemsDiscount,
+        vatAmount: totalVat,
+        otherDiscount,
+        otherCharges,
+        freightCharge,
+        lendAddLess,
+        roundOff,
+        totalAmount: grandTotal,
+        narration: input.narration ?? (input.returnType === 'ByRef' && input.originalInvoiceId ? `Sales Return against ${input.originalInvoiceId}` : 'Sales Return'),
+        originalInvoiceId: input.returnType === 'ByRef' ? input.originalInvoiceId : undefined,
+      },
+    }
+  );
+
+  const salesReturnLedger = await findOrCreateSpecialLedger(input.companyId, 'Sales Returns', 'Expense', 'Expense');
+  const vatLedger = isVat ? await findOrCreateVatLedger(input.companyId) : null;
+  const customerLedger = input.customerId ? await LedgerAccount.findById(input.customerId) : null;
+  const cashLedger = input.cashAccountId ? await LedgerAccount.findById(input.cashAccountId) : null;
+  const creditLedger = cashLedger || customerLedger;
+
+  const otherDiscountLedger = otherDiscount > 0 ? await findOrCreateSpecialLedger(input.companyId, 'Other Discount on Sales', 'Expense', 'Expense') : null;
+  const otherChargesLedger = otherCharges > 0 ? await findOrCreateSpecialLedger(input.companyId, 'Other Charges on Sales', 'Revenue', 'Income') : null;
+  const freightChargesLedger = freightCharge > 0 ? await findOrCreateSpecialLedger(input.companyId, 'Freight Charges on Sales', 'Revenue', 'Income') : null;
+  const travelChargesLedger = lendAddLess > 0 ? await findOrCreateSpecialLedger(input.companyId, 'Travel Charges on Sales', 'Revenue', 'Income') : null;
+  const roundOffLedger = Math.abs(roundOff) > 0.001 ? await findOrCreateSpecialLedger(input.companyId, 'Round Off on Sales', 'Expense', 'Expense') : null;
+
+  if (creditLedger) {
+    const voucherLines: Array<{ ledgerAccountId: string; debitAmount: number; creditAmount: number; narration?: string }> = [];
+    const salesReturnDebit = grandTotal - totalVat - netAdjustmentsNet;
+    voucherLines.push({
+      ledgerAccountId: salesReturnLedger._id.toString(),
+      debitAmount: salesReturnDebit,
+      creditAmount: 0,
+      narration: `Sales Return ${invoiceNo}`,
+    });
+    if (vatLedger && totalVat > 0) {
+      voucherLines.push({
+        ledgerAccountId: vatLedger._id.toString(),
+        debitAmount: totalVat,
+        creditAmount: 0,
+        narration: `Sales Return ${invoiceNo} - VAT`,
+      });
+    }
+    if (otherDiscountLedger && otherDiscount > 0) {
+      voucherLines.push({
+        ledgerAccountId: otherDiscountLedger._id.toString(),
+        debitAmount: 0,
+        creditAmount: otherDiscountNet,
+        narration: `Sales Return ${invoiceNo} - Other Discount`,
+      });
+    }
+    if (otherChargesLedger && otherCharges > 0) {
+      voucherLines.push({
+        ledgerAccountId: otherChargesLedger._id.toString(),
+        debitAmount: otherChargesNet,
+        creditAmount: 0,
+        narration: `Sales Return ${invoiceNo} - Other Charges`,
+      });
+    }
+    if (freightChargesLedger && freightCharge > 0) {
+      voucherLines.push({
+        ledgerAccountId: freightChargesLedger._id.toString(),
+        debitAmount: freightChargeNet,
+        creditAmount: 0,
+        narration: `Sales Return ${invoiceNo} - Freight Charges`,
+      });
+    }
+    if (travelChargesLedger && lendAddLess > 0) {
+      voucherLines.push({
+        ledgerAccountId: travelChargesLedger._id.toString(),
+        debitAmount: lendAddLessNet,
+        creditAmount: 0,
+        narration: `Sales Return ${invoiceNo} - Travel Charges`,
+      });
+    }
+    if (roundOffLedger && Math.abs(roundOff) > 0.001) {
+      voucherLines.push({
+        ledgerAccountId: roundOffLedger._id.toString(),
+        debitAmount: roundOffNet > 0 ? roundOffNet : 0,
+        creditAmount: roundOffNet < 0 ? Math.abs(roundOffNet) : 0,
+        narration: `Sales Return ${invoiceNo} - Round Off`,
+      });
+    }
+    voucherLines.push({
+      ledgerAccountId: creditLedger._id.toString(),
+      debitAmount: 0,
+      creditAmount: grandTotal,
+      narration: cashLedger ? `Sales Return ${invoiceNo} - Cash Refund` : `Sales Return ${invoiceNo} - On Account`,
+    });
+
+    let totalDebit = voucherLines.reduce((s, l) => s + l.debitAmount, 0);
+    let totalCredit = voucherLines.reduce((s, l) => s + l.creditAmount, 0);
+    const diff = Math.abs(totalDebit - totalCredit);
+    if (diff > 0.01) {
+      if (totalDebit > totalCredit) {
+        voucherLines[0].debitAmount = (voucherLines[0].debitAmount || 0) - diff;
+      } else {
+        voucherLines[0].debitAmount = (voucherLines[0].debitAmount || 0) + diff;
+      }
+    }
+    const v = await voucherService.createAndPost({
+      companyId: input.companyId,
+      financialYearId: input.financialYearId,
+      voucherType: 'Journal',
+      date: returnDate,
+      lines: voucherLines,
+      narration: `Sales Return ${invoiceNo}`,
+      createdBy: userId,
+    });
+    await SalesInvoice.updateOne({ _id: existing._id }, { voucherId: v._id });
+  }
+
+  return { invoiceId: existing._id.toString(), invoiceNo };
 }
 
 export async function searchSalesReturnByInvoiceNo(companyId: string, invoiceNo: string) {
@@ -1871,7 +2285,7 @@ export async function getSalesReturn(invoiceId: string, companyId: string) {
     customerAddress: invoice.customerAddress,
     cashAccountId: invoice.cashAccountId,
     vatType: invoice.vatType,
-    taxMode: invoice.taxMode,
+    taxMode: invoice.taxMode ?? 'exclusive',
     items: items.map((i) => ({
       _id: i._id,
       productId: i.productId,
@@ -1883,6 +2297,7 @@ export async function getSalesReturn(invoiceId: string, companyId: string) {
       discount: i.discount,
       totalAmount: i.totalAmount,
       unitName: i.unitName,
+      batchNumber: i.batchNumber,
     })),
     otherDiscount: invoice.otherDiscount,
     otherCharges: invoice.otherCharges,

@@ -19,7 +19,8 @@ export default defineConfig(function (_a) {
                 renderer: {},
             }),
         ],
-        base: './',
+        // Use '/' for static deployment (e.g. Render); './' for Electron
+        base: process.env.VITE_BASE_PATH || './',
         resolve: {
             alias: { '@': '/src' },
         },

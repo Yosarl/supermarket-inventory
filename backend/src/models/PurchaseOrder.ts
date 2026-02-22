@@ -25,6 +25,7 @@ export interface IPurchaseOrder extends Document {
   supplierId?: mongoose.Types.ObjectId;
   supplierName?: string;
   vatType: 'Vat' | 'NonVat';
+  taxMode?: 'inclusive' | 'exclusive';
   narration?: string;
   batches: IPurchaseOrderBatch[];
   totalAmount: number;
@@ -67,6 +68,7 @@ const PurchaseOrderSchema = new Schema<IPurchaseOrder>(
     supplierId: { type: Schema.Types.ObjectId, ref: 'LedgerAccount' },
     supplierName: { type: String },
     vatType: { type: String, enum: ['Vat', 'NonVat'], default: 'Vat' },
+    taxMode: { type: String, enum: ['inclusive', 'exclusive'], default: 'inclusive' },
     narration: { type: String },
     batches: { type: [PurchaseOrderBatchSchema], default: [] },
     totalAmount: { type: Number, default: 0 },

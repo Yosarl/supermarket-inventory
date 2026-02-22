@@ -88,6 +88,25 @@ export async function getNextInvoiceNo(
   }
 }
 
+// GET /purchases/next-batch-no?companyId=...
+export async function getNextBatchNo(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const companyId = req.query.companyId as string;
+    if (!companyId) {
+      res.status(400).json({ success: false, message: 'Company ID required' });
+      return;
+    }
+    const batchNumber = await purchaseService.getNextBatchNumber(companyId);
+    res.json({ success: true, data: { batchNumber } });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // GET /purchases/:id
 export async function getPurchaseById(
   req: AuthRequest,

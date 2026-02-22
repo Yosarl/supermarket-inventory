@@ -14,3 +14,4 @@ export { LedgerEntry } from './LedgerEntry';
 export { AuditLog } from './AuditLog';
 export { BarcodeTemplate } from './BarcodeTemplate';
 export { BackupMetadata } from './BackupMetadata';
+export { OpeningStockEntry } from './OpeningStockEntry';

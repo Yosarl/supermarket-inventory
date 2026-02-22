@@ -57,7 +57,6 @@ export interface CreateProductInput {
   purchasePrice?: number;
   specialPrice?: number;
   specialPrice2?: number;
-  expiryDate?: Date;
   imageUrl?: string;
   allowBatches?: boolean;
   multiUnits?: MultiUnitInput[];
@@ -160,7 +159,6 @@ export async function createProduct(input: CreateProductInput): Promise<IProduct
     purchasePrice: input.purchasePrice ?? 0,
     specialPrice: input.specialPrice,
     specialPrice2: input.specialPrice2,
-    expiryDate: input.expiryDate,
     imageUrl: input.imageUrl,
     allowBatches: input.allowBatches ?? true,
     multiUnits,
@@ -287,7 +285,7 @@ export async function list(
   const total = await Product.countDocuments(filter);
   const page = opts.page ?? 1;
   const limit = Math.min(opts.limit ?? 20, 100);
-  const products = await Product.find(filter)
+  const docs = await Product.find(filter)
     .populate('unitOfMeasureId', 'name shortCode')
     .populate('categoryId', 'name code')
     .populate('multiUnits.unitId', 'name shortCode')
@@ -295,16 +293,21 @@ export async function list(
     .skip((page - 1) * limit)
     .limit(limit)
     .lean() as unknown as IProduct[];
+  // Ensure allowBatches is always a boolean (default true) so frontend never gets undefined
+  const products = docs.map((p) => ({ ...p, allowBatches: p.allowBatches !== false })) as IProduct[];
   return { products, total };
 }
 
 export async function getById(productId: string, companyId: string): Promise<IProduct | null> {
-  return Product.findOne({ _id: productId, companyId })
+  const doc = await Product.findOne({ _id: productId, companyId })
     .populate('unitOfMeasureId')
     .populate('categoryId')
     .populate('defaultVendorId', 'name code')
     .populate('multiUnits.unitId', 'name shortCode')
     .lean() as unknown as IProduct | null;
+  if (!doc) return null;
+  // Default is true (batches enabled). Only false when explicitly set to false in DB (merged products like Lenova).
+  return { ...doc, allowBatches: doc.allowBatches !== false } as IProduct;
 }
 
 export async function getUnitOfMeasures(_companyId?: string) {
@@ -391,7 +394,6 @@ export interface UpdateProductInput {
   purchasePrice?: number;
   specialPrice?: number;
   specialPrice2?: number;
-  expiryDate?: Date | null;
   imageUrl?: string;
   allowBatches?: boolean;
   multiUnits?: MultiUnitInput[];
@@ -492,7 +494,6 @@ export async function updateProduct(
     ...(input.purchasePrice !== undefined && { purchasePrice: input.purchasePrice }),
     ...(input.specialPrice !== undefined && { specialPrice: input.specialPrice }),
     ...(input.specialPrice2 !== undefined && { specialPrice2: input.specialPrice2 }),
-    ...(input.expiryDate !== undefined && { expiryDate: input.expiryDate }),
     ...(input.imageUrl !== undefined && { imageUrl: input.imageUrl }),
     ...(input.allowBatches !== undefined && { allowBatches: input.allowBatches }),
     ...(input.multiUnits !== undefined && {

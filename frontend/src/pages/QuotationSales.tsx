@@ -9,7 +9,7 @@ import {
 } from '@mui/material';
 import {
   Delete as DeleteIcon, Save as SaveIcon, Print as PrintIcon,
-  Clear as ClearIcon, Search as SearchIcon,
+  Clear as ClearIcon, Search as SearchIcon, Send as SendIcon,
   KeyboardDoubleArrowLeft as FirstIcon, KeyboardArrowLeft as PrevIcon,
   KeyboardArrowRight as NextIcon, KeyboardDoubleArrowRight as LastIcon,
 } from '@mui/icons-material';
@@ -599,8 +599,10 @@ export default function QuotationSales() {
       }
 
       const batches = await getBatchesForProduct(product._id);
+      // Only show batch dialog when batch selection is explicitly enabled (allowBatches === true). Applies to ALL products.
+      const batchSelectionEnabled = product.allowBatches === true;
 
-      if (product.allowBatches === false) {
+      if (!batchSelectionEnabled) {
         if (batches.length > 0) {
           const nonZeroBatches = batches.filter((b) => b.quantity > 0);
           const avgPurchasePrice = nonZeroBatches.length > 0
@@ -989,8 +991,7 @@ export default function QuotationSales() {
   const openBatchDialogForLine = useCallback(async (line: LineItem) => {
     if (!line.productId) return;
     const product = products.find((p) => p._id === line.productId);
-    const isBatchedProduct = product?.allowBatches === true || (line.batchMaxPieces != null && line.batchMaxPieces > 0);
-    if (!product || !isBatchedProduct) return;
+    if (!product || product.allowBatches !== true) return;
     const batches = await getBatchesForProduct(product._id);
     if (batches.length > 1) {
       setAvailableBatches(batches);
@@ -1006,8 +1007,7 @@ export default function QuotationSales() {
       // If row already has a batched product, Enter always opens batch dialog (e.g. return to item field and press Enter)
       if (line.productId) {
         const product = products.find((p) => p._id === line.productId);
-        const isBatchedProduct = product?.allowBatches === true || (line.batchMaxPieces != null && line.batchMaxPieces > 0);
-        if (isBatchedProduct) {
+        if (product?.allowBatches === true) {
           e.preventDefault();
           e.stopPropagation();
           openBatchDialogForLine(line);
@@ -1394,7 +1394,7 @@ export default function QuotationSales() {
         await quotationApi.update(invoiceId, {
           companyId, financialYearId, date, items: apiItems,
           customerId: customerId || undefined, customerName, customerAddress,
-          rateType, vatType,
+          rateType, vatType, taxMode,
           otherDiscount, otherCharges, freightCharge, roundOff, narration,
           shippingName, shippingAddress, shippingPhone, shippingContactPerson,
         });
@@ -1404,7 +1404,7 @@ export default function QuotationSales() {
         const res = await quotationApi.create({
           companyId, financialYearId, date, items: apiItems,
           customerId: customerId || undefined, customerName, customerAddress,
-          rateType, vatType,
+          rateType, vatType, taxMode,
           otherDiscount, otherCharges, freightCharge, roundOff, narration,
           shippingName, shippingAddress, shippingPhone, shippingContactPerson,
         });
@@ -1454,11 +1454,57 @@ export default function QuotationSales() {
     }
   };
 
+  const handlePostToSales = useCallback(() => {
+    const validLines = lines.filter((l) => l.productId && l.productCode);
+    if (validLines.length === 0) return;
+    navigate('/entry/sales-b2c', {
+      state: {
+        fromQuotation: true,
+        quotationInvoiceNo: invoiceNo,
+        customerId: customerId || null,
+        customerName: customerName || 'CASH',
+        customerAddress: customerAddress || '',
+        date,
+        vatType,
+        taxMode,
+        rateType,
+        otherDiscount,
+        otherCharges,
+        freightCharge,
+        roundOff,
+        narration: narration || '',
+        shippingName: shippingName || '',
+        shippingAddress: shippingAddress || '',
+        shippingPhone: shippingPhone || '',
+        shippingContactPerson: shippingContactPerson || '',
+        lines: validLines.map((l) => ({
+          id: l.id,
+          productId: l.productId,
+          productCode: l.productCode,
+          imei: l.imei || '',
+          name: l.name,
+          unitId: l.unitId || '',
+          unitName: l.unitName || '',
+          availableUnits: (l.availableUnits || []).map((u) => ({ id: u.id, name: u.name, isMultiUnit: u.isMultiUnit ?? false, multiUnitId: u.multiUnitId })),
+          quantity: l.quantity,
+          price: l.price,
+          purchasePrice: l.purchasePrice ?? 0,
+          gross: l.gross,
+          discPercent: l.discPercent ?? 0,
+          discAmount: l.discAmount ?? 0,
+          vatAmount: l.vatAmount ?? 0,
+          total: l.total,
+        })),
+      },
+    });
+  }, [lines, invoiceNo, customerId, customerName, customerAddress, date, vatType, taxMode, rateType, otherDiscount, otherCharges, freightCharge, roundOff, narration, shippingName, shippingAddress, shippingPhone, shippingContactPerson, navigate]);
+
   const loadInvoice = useCallback((inv: any) => {
     setInvoiceId(inv._id);
     setInvoiceNo(inv.invoiceNo);
     setDate(inv.date);
     setVatType(inv.vatType || 'Vat');
+    setTaxMode((inv.taxMode as 'inclusive' | 'exclusive') ?? 'inclusive');
     setRateType(inv.rateType || 'WSale');
     setCustomerId(inv.customerId || null);
     setCustomerName(inv.customerName || '');
@@ -1954,6 +2000,10 @@ export default function QuotationSales() {
                   <Typography sx={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e293b' }}>{calculations.subTotal.toFixed(2)}</Typography>
                 </Box>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                  <Typography sx={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 500 }}>Before tax (incl. adjustments)</Typography>
+                  <Typography sx={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e293b' }}>{(calculations.grandTotal - calculations.totalVat).toFixed(2)}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                   <Typography sx={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 500 }}>Total VAT</Typography>
                   <Typography sx={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e293b' }}>{calculations.totalVat.toFixed(2)}</Typography>
                 </Box>
@@ -1985,6 +2035,7 @@ export default function QuotationSales() {
           <Button variant="contained" startIcon={<ClearIcon />} onClick={handleClear} sx={btnSx}>Clear</Button>
           <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
           <Button variant="contained" startIcon={<SaveIcon />} onClick={() => setEditConfirmOpen(true)} disabled={!invoiceId || loading} sx={btnSx}>Edit</Button>
+          <Button variant="contained" startIcon={<SendIcon />} onClick={handlePostToSales} disabled={!invoiceId} sx={btnSx}>Post to Sales</Button>
           <Button variant="contained" startIcon={<DeleteIcon />} onClick={() => setDeleteDialogOpen(true)} disabled={!invoiceId} sx={btnSx}>Delete</Button>
           <Box sx={{ flex: 1 }} />
           <Button variant="contained" startIcon={<SearchIcon />} onClick={() => { setSearchInvoiceNo(''); setSearchDialogOpen(true); }} sx={btnSx}>Search Quotation</Button>

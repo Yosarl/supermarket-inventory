@@ -13,6 +13,9 @@ router.get('/', purchaseController.listPurchases);
 // Get next invoice number
 router.get('/next-invoice-no', purchaseController.getNextInvoiceNo);
 
+// Get next batch number (00001, 00002, ...)
+router.get('/next-batch-no', purchaseController.getNextBatchNo);
+
 // Search by invoice number
 router.get('/search', purchaseController.searchPurchase);
 

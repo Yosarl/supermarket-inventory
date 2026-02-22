@@ -51,10 +51,22 @@ export default function Login() {
       }
       navigate('/');
     } catch (err: unknown) {
-      const ax = err as { response?: { data?: { message?: string }; status?: number }; message?: string; code?: string };
-      const msg = ax?.response?.data?.message ?? (ax?.code === 'ECONNABORTED' || ax?.message === 'Network Error'
-        ? 'Request timed out or server unreachable. If the backend was idle, wait ~1 minute and try again.'
-        : 'Login failed');
+      const ax = err as {
+        response?: { data?: { message?: string; errors?: Array<{ msg?: string }> }; status?: number };
+        message?: string;
+        code?: string;
+      };
+      const data = ax?.response?.data;
+      let msg = data?.message;
+      if (!msg && data?.errors?.length) {
+        msg = data.errors.map((e) => e.msg).filter(Boolean).join('. ') || 'Validation failed';
+      }
+      if (!msg) {
+        msg =
+          ax?.code === 'ECONNABORTED' || ax?.message === 'Network Error'
+            ? 'Request timed out or server unreachable. If the backend was idle, wait ~1 minute and try again.'
+            : 'Login failed';
+      }
       setError(msg);
     }
   };

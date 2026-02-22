@@ -27,7 +27,9 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401) {
+    // Don't redirect on 401 from login endpoint — let the Login page show the error
+    const isLoginRequest = err.config?.url?.includes('/auth/login');
+    if (err.response?.status === 401 && !isLoginRequest) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
       window.location.href = '/login';
@@ -95,6 +97,54 @@ export const productApi = {
   },
 };
 
+export interface OpeningStockBatchPayload {
+  productId: string;
+  productCode?: string;
+  productName?: string;
+  batchNumber?: string;
+  purchasePrice: number;
+  quantity: number;
+  discAmount?: number;
+  expiryDate?: string;
+  retail?: number;
+  wholesale?: number;
+  specialPrice1?: number;
+  specialPrice2?: number;
+  multiUnitId?: string;
+}
+
+export interface OpeningStockEntryData {
+  _id: string;
+  entryNo: string;
+  date: string;
+  vatType: string;
+  taxMode: string;
+  narration: string;
+  totalAmount: number;
+  batches: Array<{
+    productId: string;
+    productCode: string;
+    productName: string;
+    batchNumber: string;
+    purchasePrice: number;
+    quantity: number;
+    discAmount: number;
+    expiryDate?: string;
+    retail: number;
+    wholesale: number;
+    specialPrice1: number;
+    specialPrice2: number;
+    multiUnitId?: string;
+  }>;
+}
+
+export interface OpeningStockListItem {
+  _id: string;
+  entryNo: string;
+  date: string;
+  totalAmount: number;
+}
+
 export const openingStockApi = {
   post: (data: { companyId: string; financialYearId: string; items: Array<{ productId: string; quantity: number; costPrice: number }> }) =>
     api.post<{ success: boolean; data: unknown }>('/opening-stock', data),
@@ -107,6 +157,45 @@ export const openingStockApi = {
       '/opening-stock/import',
       { companyId, financialYearId, ...data }
     ),
+  entries: {
+    list: (companyId: string, financialYearId: string) =>
+      api.get<{ success: boolean; data: OpeningStockListItem[] }>('/opening-stock/entries', {
+        params: { companyId, financialYearId },
+      }),
+    getNextEntryNo: (companyId: string, financialYearId: string) =>
+      api.get<{ success: boolean; data: { entryNo: string } }>('/opening-stock/entries/next-entry-no', {
+        params: { companyId, financialYearId },
+      }),
+    getById: (id: string, companyId: string) =>
+      api.get<{ success: boolean; data: OpeningStockEntryData }>(`/opening-stock/entries/${id}`, {
+        params: { companyId },
+      }),
+    create: (data: {
+      companyId: string;
+      financialYearId: string;
+      date?: string;
+      vatType?: 'Vat' | 'NonVat';
+      taxMode?: 'inclusive' | 'exclusive';
+      narration?: string;
+      batches: OpeningStockBatchPayload[];
+    }) =>
+      api.post<{ success: boolean; data: { entryId: string; entryNo: string } }>('/opening-stock/entries', data),
+    update: (
+      id: string,
+      data: {
+        companyId: string;
+        financialYearId: string;
+        date?: string;
+        vatType?: 'Vat' | 'NonVat';
+        taxMode?: 'inclusive' | 'exclusive';
+        narration?: string;
+        batches: OpeningStockBatchPayload[];
+      }
+    ) =>
+      api.put<{ success: boolean; data: { entryId: string; entryNo: string } }>(`/opening-stock/entries/${id}`, data),
+    delete: (id: string, companyId: string) =>
+      api.delete<{ success: boolean; message?: string }>(`/opening-stock/entries/${id}`, { params: { companyId } }),
+  },
 };
 
 export interface B2CLineItem {
@@ -234,6 +323,41 @@ export const salesApi = {
     roundOff?: number;
     narration?: string;
   }) => api.post<{ success: boolean; data: { invoiceId: string; invoiceNo: string } }>('/sales/return', data),
+  updateSalesReturn: (
+    returnId: string,
+    data: {
+      companyId: string;
+      financialYearId: string;
+      date?: string;
+      returnType: 'OnAccount' | 'ByRef';
+      originalInvoiceId?: string;
+      customerId?: string;
+      customerName?: string;
+      customerAddress?: string;
+      cashAccountId?: string;
+      vatType?: 'Vat' | 'NonVat';
+      taxMode?: 'inclusive' | 'exclusive';
+      items: Array<{
+        productId: string;
+        productCode?: string;
+        imei?: string;
+        description?: string;
+        quantity: number;
+        unitPrice: number;
+        discountPercent?: number;
+        discount?: number;
+        unitId?: string;
+        unitName?: string;
+        batchNumber?: string;
+      }>;
+      otherDiscount?: number;
+      otherCharges?: number;
+      freightCharge?: number;
+      lendAddLess?: number;
+      roundOff?: number;
+      narration?: string;
+    }
+  ) => api.put<{ success: boolean; data: { invoiceId: string; invoiceNo: string } }>(`/sales/return/${returnId}`, data),
   searchSalesReturn: (companyId: string, invoiceNo: string) =>
     api.get('/sales/return/search', { params: { companyId, invoiceNo } }),
   listSalesReturns: (companyId: string, financialYearId: string) =>
@@ -301,6 +425,9 @@ export interface PurchaseInvoiceData {
   otherCharges?: number;
   freightCharge?: number;
   roundOff?: number;
+  taxMode?: 'inclusive' | 'exclusive';
+  paymentType?: string;
+  cashAccountId?: string | null;
   batches: Array<{
     productId: string;
     productCode: string;
@@ -334,6 +461,8 @@ export const purchaseApi = {
     date?: string;
     supplierId?: string;
     supplierName?: string;
+    paymentType?: 'Cash' | 'Credit';
+    cashAccountId?: string;
     vatType?: 'Vat' | 'NonVat';
     taxMode?: 'inclusive' | 'exclusive';
     narration?: string;
@@ -371,6 +500,8 @@ export const purchaseApi = {
     date?: string;
     supplierId?: string;
     supplierName?: string;
+    paymentType?: 'Cash' | 'Credit';
+    cashAccountId?: string;
     vatType?: 'Vat' | 'NonVat';
     taxMode?: 'inclusive' | 'exclusive';
     narration?: string;
@@ -415,6 +546,11 @@ export const purchaseApi = {
 
   getNextInvoiceNo: (companyId: string) =>
     api.get<{ success: boolean; data: { invoiceNo: string } }>('/purchases/next-invoice-no', {
+      params: { companyId },
+    }),
+
+  getNextBatchNo: (companyId: string) =>
+    api.get<{ success: boolean; data: { batchNumber: string } }>('/purchases/next-batch-no', {
       params: { companyId },
     }),
 
@@ -542,6 +678,141 @@ export const purchaseOrderApi = {
     }),
 };
 
+// ─── Purchase Return API ────────────────────────────────────
+export interface PurchaseReturnListItem {
+  _id: string;
+  invoiceNo: string;
+  date: string;
+  supplierName?: string;
+  totalAmount: number;
+}
+
+export interface PurchaseReturnData {
+  _id: string;
+  invoiceNo: string;
+  date: string;
+  returnType: 'OnAccount' | 'ByRef';
+  originalPurchaseId?: string;
+  supplierId: string;
+  supplierName: string;
+  supplierInvoiceNo?: string;
+  cashAccountId?: string;
+  vatType: 'Vat' | 'NonVat';
+  taxMode?: 'inclusive' | 'exclusive';
+  narration?: string;
+  totalAmount: number;
+  itemsDiscount: number;
+  otherDiscount: number;
+  otherCharges: number;
+  freightCharge: number;
+  roundOff: number;
+  items: Array<{
+    productId: string;
+    productCode: string;
+    productName: string;
+    batchNumber: string;
+    quantity: number;
+    purchasePrice: number;
+    discAmount: number;
+    unitId?: string;
+    unitName?: string;
+    multiUnitId?: string;
+  }>;
+}
+
+export const purchaseReturnApi = {
+  create: (data: {
+    companyId: string;
+    financialYearId: string;
+    date?: string;
+    returnType: 'OnAccount' | 'ByRef';
+    originalPurchaseId?: string;
+    supplierId?: string;
+    supplierName?: string;
+    supplierInvoiceNo?: string;
+    cashAccountId?: string;
+    vatType?: 'Vat' | 'NonVat';
+    taxMode?: 'inclusive' | 'exclusive';
+    items: Array<{
+      productId: string;
+      productCode?: string;
+      productName?: string;
+      quantity: number;
+      purchasePrice: number;
+      discAmount?: number;
+      batchNumber?: string;
+      unitId?: string;
+      unitName?: string;
+      multiUnitId?: string;
+    }>;
+    itemsDiscount?: number;
+    otherDiscount?: number;
+    otherCharges?: number;
+    freightCharge?: number;
+    roundOff?: number;
+    narration?: string;
+  }) =>
+    api.post<{ success: boolean; data: { returnId: string; invoiceNo: string } }>('/purchase-returns', data),
+
+  list: (companyId: string, financialYearId: string) =>
+    api.get<{ success: boolean; data: PurchaseReturnListItem[] }>('/purchase-returns', {
+      params: { companyId, financialYearId },
+    }),
+
+  getNextInvoiceNo: (companyId: string, financialYearId: string) =>
+    api.get<{ success: boolean; data: { invoiceNo: string } }>('/purchase-returns/next-invoice-no', {
+      params: { companyId, financialYearId },
+    }),
+
+  getById: (id: string, companyId: string) =>
+    api.get<{ success: boolean; data: PurchaseReturnData }>(`/purchase-returns/${id}`, { params: { companyId } }),
+
+  search: (companyId: string, invoiceNo: string) =>
+    api.get<{ success: boolean; data: PurchaseReturnData | null }>('/purchase-returns/search', {
+      params: { companyId, invoiceNo },
+    }),
+
+  update: (
+    id: string,
+    companyId: string,
+    data: {
+      companyId: string;
+      financialYearId: string;
+      date?: string;
+      returnType: 'OnAccount' | 'ByRef';
+      originalPurchaseId?: string;
+      supplierId?: string;
+      supplierName?: string;
+      supplierInvoiceNo?: string;
+      cashAccountId?: string;
+      vatType?: 'Vat' | 'NonVat';
+      taxMode?: 'inclusive' | 'exclusive';
+      items: Array<{
+        productId: string;
+        productCode?: string;
+        productName?: string;
+        quantity: number;
+        purchasePrice: number;
+        discAmount?: number;
+        batchNumber?: string;
+        unitId?: string;
+        unitName?: string;
+        multiUnitId?: string;
+      }>;
+      itemsDiscount?: number;
+      otherDiscount?: number;
+      otherCharges?: number;
+      freightCharge?: number;
+      roundOff?: number;
+      narration?: string;
+    }
+  ) =>
+    api.put<{ success: boolean; data: { returnId: string; invoiceNo: string } }>(`/purchase-returns/${id}`, data, { params: { companyId } }),
+
+  delete: (id: string, companyId: string) =>
+    api.delete(`/purchase-returns/${id}`, { params: { companyId } }),
+};
+
 // ─── Quotation Sales API ────────────────────────────────────
 export const quotationApi = {
   getNextInvoiceNo: (companyId: string, financialYearId: string) =>
@@ -570,6 +841,7 @@ export const quotationApi = {
     customerAddress?: string;
     rateType?: string;
     vatType?: string;
+    taxMode?: 'inclusive' | 'exclusive';
     otherDiscount?: number;
     otherCharges?: number;
     freightCharge?: number;

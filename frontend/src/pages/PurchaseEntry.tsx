@@ -429,7 +429,7 @@ export default function PurchaseEntry() {
     // When Vat: adjustments are inclusive — total VAT includes VAT in adjustments
     const netAdjustments = otherCharges + freightCharge + roundOff - otherDiscount;
     const vatFromAdjustments = vatType === 'Vat' && netAdjustments !== 0
-      ? parseFloat((netAdjustments * 5 / (100 + 5)).toFixed(2))
+      ? parseFloat((netAdjustments * VAT_RATE / (100 + VAT_RATE)).toFixed(2))
       : 0;
     const totalVat = itemsVat + vatFromAdjustments;
     // Inclusive: line total = net; Exclusive: line total = net + vat
@@ -455,6 +455,147 @@ export default function PurchaseEntry() {
     }
   }, [routeLocation.pathname]);
 
+  // Pre-fill from Purchase Order when navigated via "Post to Purchase"
+  useEffect(() => {
+    type POState = {
+      fromPurchaseOrder?: boolean;
+      supplierId?: string | null;
+      supplierName?: string;
+      date?: string;
+      supplierInvoiceNo?: string;
+      vatType?: 'Vat' | 'NonVat';
+      taxMode?: 'inclusive' | 'exclusive';
+      paymentType?: string;
+      cashAccountId?: string | null;
+      otherDiscount?: number;
+      otherCharges?: number;
+      freightCharge?: number;
+      roundOff?: number;
+      narration?: string;
+      lines?: Array<{
+        id: string;
+        productId: string;
+        productCode: string;
+        imei?: string;
+        name: string;
+        unitId: string;
+        unitName: string;
+        multiUnitId?: string;
+        availableUnits?: Array<{ id: string; name: string; isMultiUnit?: boolean; multiUnitId?: string }>;
+        quantity: number;
+        pRate: number;
+        gross: number;
+        discPercent: number;
+        discAmount: number;
+        vatAmount: number;
+        profitPercent?: number;
+        mrp: number;
+        retail: number;
+        wholesale: number;
+        branch?: string;
+        total: number;
+        expiryDate?: string;
+        specialPrice1: number;
+        specialPrice2: number;
+        batchNumber?: string;
+      }>;
+      batches?: Array<{ productId: string; productCode: string; productName: string; purchasePrice: number; discAmount: number; expiryDate?: string; quantity: number; retail?: number; wholesale?: number; specialPrice1?: number; specialPrice2?: number; batchNumber?: string; multiUnitId?: string }>;
+    };
+    const state = routeLocation.state as POState | null;
+    const hasLines = (state?.lines?.length ?? 0) > 0;
+    const hasBatches = (state?.batches?.length ?? 0) > 0;
+    if (!state?.fromPurchaseOrder || (!hasLines && !hasBatches) || !companyId) return;
+    setSupplierId(state.supplierId ?? null);
+    setSupplierName(state.supplierName ?? '');
+    setDate(state.date ?? getCurrentDate());
+    setSupplierInvNo(state.supplierInvoiceNo ?? '');
+    setVatType(state.vatType ?? 'Vat');
+    setTaxMode(state.taxMode ?? 'inclusive');
+    setPaymentType((state.paymentType ?? 'Credit') as 'Cash' | 'Credit');
+    setCashAccountId(state.cashAccountId ?? null);
+    setOtherDiscount(state.otherDiscount ?? 0);
+    setOtherCharges(state.otherCharges ?? 0);
+    setFreightCharge(state.freightCharge ?? 0);
+    setRoundOff(state.roundOff ?? 0);
+    setNarration(state.narration ?? '');
+    let newLines: LineItem[];
+    if (hasLines && state.lines) {
+      newLines = state.lines.map((l) => {
+        const au = (l.availableUnits && l.availableUnits.length > 0)
+          ? l.availableUnits.map((u) => ({ id: u.id, name: u.name, isMultiUnit: u.isMultiUnit ?? false, multiUnitId: u.multiUnitId }))
+          : (l.unitId && l.unitName ? [{ id: l.unitId, name: l.unitName, isMultiUnit: false }] : []);
+        return {
+          id: l.id,
+          productId: l.productId,
+          productCode: l.productCode,
+          imei: l.imei ?? '',
+          name: l.name,
+          unitId: l.unitId ?? '',
+          unitName: l.unitName ?? '',
+          availableUnits: au,
+          quantity: l.quantity,
+          pRate: l.pRate,
+          gross: l.gross,
+          discPercent: l.discPercent,
+          discAmount: l.discAmount,
+          vatAmount: l.vatAmount,
+          profitPercent: l.profitPercent ?? 0,
+          mrp: l.mrp,
+          retail: l.retail,
+          wholesale: l.wholesale,
+          branch: l.branch ?? 'MAIN BRANCH',
+          total: l.total,
+          expiryDate: l.expiryDate ?? '',
+          specialPrice1: l.specialPrice1,
+          specialPrice2: l.specialPrice2,
+          batchNumber: l.batchNumber ?? '',
+          multiUnitId: l.multiUnitId,
+        };
+      });
+    } else if (state.batches) {
+      newLines = state.batches.map((b, idx) => {
+        const gross = b.quantity * b.purchasePrice;
+        const discPercent = gross > 0 ? parseFloat(((b.discAmount / gross) * 100).toFixed(2)) : 0;
+        const net = gross - b.discAmount;
+        const vatAmount = state.vatType === 'Vat' ? parseFloat((net * 5 / (state.taxMode === 'inclusive' ? 105 : 100)).toFixed(2)) : 0;
+        const total = state.vatType === 'Vat' && state.taxMode === 'exclusive' ? net + vatAmount : net;
+        return {
+          id: `po-${idx}-${Date.now()}`,
+          productId: b.productId,
+          productCode: b.productCode,
+          imei: '',
+          name: b.productName,
+          unitId: '',
+          unitName: '',
+          availableUnits: [],
+          quantity: b.quantity,
+          pRate: b.purchasePrice,
+          gross,
+          discPercent,
+          discAmount: b.discAmount,
+          vatAmount,
+          profitPercent: 0,
+          mrp: b.retail ?? 0,
+          retail: b.retail ?? 0,
+          wholesale: b.wholesale ?? 0,
+          branch: 'MAIN BRANCH',
+          total: parseFloat(total.toFixed(2)),
+          expiryDate: b.expiryDate ?? '',
+          specialPrice1: b.specialPrice1 ?? 0,
+          specialPrice2: b.specialPrice2 ?? 0,
+          batchNumber: b.batchNumber ?? '',
+          multiUnitId: b.multiUnitId,
+        };
+      });
+    } else {
+      newLines = [emptyLine()];
+    }
+    setLines(newLines.length > 0 ? newLines : [emptyLine()]);
+    setInvoiceId(null);
+    setIsSaved(false);
+    window.history.replaceState({}, '', routeLocation.pathname);
+  }, [companyId, routeLocation.pathname, routeLocation.state]);
+
   // Detect return from Supplier Create page — reload suppliers and auto-select
   useEffect(() => {
     if (pendingSupplierName && routeLocation.pathname === '/entry/purchase') {
@@ -478,12 +619,17 @@ export default function PurchaseEntry() {
   // Load initial data
   useEffect(() => {
     if (!companyId || !financialYearId) return;
-    loadSuppliers();
-    loadCashAccounts();
-    loadProducts();
-    loadInvoiceList();
-    loadNextInvoiceNo();
-    // Focus Cash/Supplier AC on page load
+    const init = async () => {
+      loadSuppliers();
+      const accounts = await loadCashAccounts();
+      loadProducts();
+      loadInvoiceList();
+      loadNextInvoiceNo();
+      if (accounts.length > 0 && !invoiceId) {
+        setCashAccountId(accounts[0]._id);
+      }
+    };
+    init();
     setTimeout(() => supplierAcRef.current?.focus(), 800);
   }, [companyId, financialYearId]);
 
@@ -499,13 +645,11 @@ export default function PurchaseEntry() {
   const loadCashAccounts = async () => {
     try {
       const res = await ledgerAccountApi.list(companyId!, 'Cash');
-      setCashAccounts(res.data.data as CashAccount[]);
-      if ((res.data.data as CashAccount[]).length > 0) {
-        const defaultCash = (res.data.data as CashAccount[])[0];
-        setCashAccountId(defaultCash._id);
-      }
+      const accounts = res.data.data as CashAccount[];
+      setCashAccounts(accounts);
+      return accounts;
     } catch {
-      // ignore
+      return [];
     }
   };
 
@@ -553,8 +697,11 @@ export default function PurchaseEntry() {
       setDate(inv.date);
       setSupplierInvNo(inv.supplierInvoiceNo || '');
       setVatType(inv.vatType || 'Vat');
+      setTaxMode((inv.taxMode as 'inclusive' | 'exclusive') ?? 'inclusive');
       setSupplierId(inv.supplierId || null);
       setSupplierName(inv.supplierName || '');
+      setPaymentType((inv.paymentType ?? 'Credit') as 'Cash' | 'Credit');
+      setCashAccountId(inv.cashAccountId || null);
       setNarration(inv.narration || '');
       setVoucherId(inv.voucherId || null);
       setVoucherNo(inv.voucherNo || null);
@@ -576,7 +723,7 @@ export default function PurchaseEntry() {
         setOtherDiscPercent(0);
       }
 
-      // Build line items from batches
+      // Build line items from batches — look up product for imei/unit info
       const newLines: LineItem[] = inv.batches.map((b: any, idx: number) => {
         const gross = b.quantity * b.purchasePrice;
         const batchDisc = b.discAmount ?? 0;
@@ -584,15 +731,65 @@ export default function PurchaseEntry() {
         const profitPercent = b.purchasePrice > 0 && b.retail > 0
           ? ((b.retail - b.purchasePrice) / b.purchasePrice) * 100
           : 0;
+
+        const product = products.find((p) => p._id === b.productId);
+        const availableUnits: UnitOption[] = [];
+        let selectedUnit: UnitOption | null = null;
+
+        if (product) {
+          const mainUnit = product.unitOfMeasureId;
+          if (mainUnit) {
+            const mainUnitId = typeof mainUnit === 'object' ? mainUnit._id : mainUnit;
+            const mainUnitName = typeof mainUnit === 'object' ? (mainUnit.shortCode || mainUnit.name || 'Main') : 'Main';
+            availableUnits.push({
+              id: mainUnitId,
+              name: mainUnitName,
+              isMultiUnit: false,
+              imei: product.imei,
+              price: product.purchasePrice ?? 0,
+            });
+          }
+          if (product.allowBatches === false && product.multiUnits && product.multiUnits.length > 0) {
+            product.multiUnits.forEach((mu) => {
+              const muUnitId = typeof mu.unitId === 'object' ? mu.unitId?._id : mu.unitId;
+              const muUnitName = typeof mu.unitId === 'object' ? (mu.unitId?.shortCode || mu.unitId?.name || 'Unit') : 'Unit';
+              if (muUnitId) {
+                const conv = mu.conversion || 1;
+                const perPiecePrice = mu.wholesale ? mu.wholesale / conv : (mu.totalPrice ? mu.totalPrice / conv : (mu.price ?? 0));
+                availableUnits.push({
+                  id: muUnitId,
+                  name: muUnitName,
+                  isMultiUnit: true,
+                  multiUnitId: mu.multiUnitId,
+                  imei: mu.imei,
+                  price: perPiecePrice,
+                  conversion: mu.conversion,
+                  wholesale: mu.wholesale,
+                  retail: mu.retail,
+                  specialPrice1: mu.specialPrice1,
+                  specialPrice2: mu.specialPrice2,
+                });
+              }
+            });
+          }
+          if (b.multiUnitId) {
+            selectedUnit = availableUnits.find((u) => u.multiUnitId === b.multiUnitId) || null;
+          }
+          if (!selectedUnit) {
+            selectedUnit = availableUnits.length > 0 ? availableUnits[0] : null;
+          }
+        }
+
         return {
           id: `${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 6)}`,
           productId: b.productId,
           productCode: b.productCode,
-          imei: '',
+          imei: selectedUnit?.imei || product?.imei || '',
           name: b.productName,
-          unitId: '',
-          unitName: '',
-          availableUnits: [],
+          unitId: selectedUnit?.id || '',
+          unitName: selectedUnit?.name || '',
+          multiUnitId: b.multiUnitId || (selectedUnit?.isMultiUnit ? selectedUnit?.multiUnitId : undefined),
+          availableUnits,
           quantity: b.quantity,
           pRate: b.purchasePrice,
           gross,
@@ -622,7 +819,7 @@ export default function PurchaseEntry() {
     } finally {
       setLoading(false);
     }
-  }, [invoiceList]);
+  }, [invoiceList, products]);
 
   // Fetch ledger entries when viewing an invoice that has a voucher
   useEffect(() => {
@@ -832,10 +1029,16 @@ export default function PurchaseEntry() {
       // Calculate profit percentage
       const profitPercent = usePrice > 0 && useRetail > 0 ? ((useRetail - usePrice) / usePrice) * 100 : 0;
 
-      // Generate batch number for new line
-      const timestamp = Date.now().toString(36).toUpperCase();
-      const random = Math.random().toString(36).substring(2, 6).toUpperCase();
-      const batchNum = `BTH-${product.code || 'XXX'}-${timestamp}-${random}`;
+      // Get next batch number from server (00001, 00002, ...) or leave empty for backend to assign
+      let batchNum = '';
+      try {
+        if (companyId) {
+          const res = await purchaseApi.getNextBatchNo(companyId);
+          batchNum = res.data?.data?.batchNumber ?? '';
+        }
+      } catch {
+        // leave empty; backend will assign on save
+      }
 
       setLines((prev) =>
         prev.map((line) => {
@@ -977,74 +1180,102 @@ export default function PurchaseEntry() {
   // Handle Enter key on Item Name field - auto-select matching product by typed name
   const handleItemNameKeyDown = useCallback(
     (e: React.KeyboardEvent, line: LineItem) => {
-      if (e.key === 'Enter') {
-        // Check if the Autocomplete dropdown is open — if so, let the Autocomplete handle the selection
-        const input = itemNameInputRefs.current[line.id];
-        if (input) {
-          const isDropdownOpen = input.getAttribute('aria-expanded') === 'true';
-          if (isDropdownOpen) {
-            // Dropdown is open — Autocomplete will handle the Enter key to select the highlighted option
-            setTimeout(() => {
-              qtyInputRefs.current[line.id]?.focus();
-              qtyInputRefs.current[line.id]?.select();
-            }, 150);
-            return;
-          }
+      if (e.key !== 'Enter') return;
+
+      // If item name is blank and no product selected — check if last row, jump to save
+      if (!line.productId && !line.name.trim()) {
+        const currentIndex = lines.findIndex((l) => l.id === line.id);
+        if (currentIndex === lines.length - 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          setTimeout(() => otherDiscPercentRef.current?.focus(), 50);
+          return;
+        }
+      }
+
+      // Helper: exact name match (case-insensitive)
+      const exactNameMatch = (list: Product[], name: string) =>
+        list.find((p: Product) => (p.name && String(p.name).trim().toLowerCase()) === name.trim().toLowerCase()) ?? null;
+
+      // If no product selected yet, try to match typed name to a product (local then API)
+      if (!line.productId && line.name.trim()) {
+        const typed = line.name.trim();
+        const typedLower = typed.toLowerCase();
+        let match = products.find((p: Product) => p.name && String(p.name).trim().toLowerCase() === typedLower) ?? null;
+
+        if (match) {
+          e.preventDefault();
+          e.stopPropagation();
+          handleProductSelect(line.id, match);
+          setTimeout(() => {
+            qtyInputRefs.current[line.id]?.focus();
+            qtyInputRefs.current[line.id]?.select();
+          }, 100);
+          return;
         }
 
-        // If item name is blank and no product selected — check if last row, jump to save
-        if (!line.productId && !line.name.trim()) {
-          const currentIndex = lines.findIndex((l) => l.id === line.id);
-          if (currentIndex === lines.length - 1) {
-            e.preventDefault();
-            e.stopPropagation();
-            setTimeout(() => otherDiscPercentRef.current?.focus(), 50);
-            return;
+        // No local match — fetch by search, then exact match or single-result fallback
+        e.preventDefault();
+        e.stopPropagation();
+        const lineId = line.id;
+        (async () => {
+          if (!companyId) return;
+          try {
+            const res = await productApi.list(companyId, { search: typed, limit: 50 });
+            const data = res?.data?.data;
+            const list = (data?.products ?? []) as Product[];
+            let found = exactNameMatch(list, typed);
+            // If no exact match but search returned exactly one product, use it (e.g. "lenova" -> "Lenova"/"Lenovo")
+            if (!found && list.length === 1) found = list[0];
+            if (found) {
+              handleProductSelect(lineId, found);
+              setTimeout(() => {
+                qtyInputRefs.current[lineId]?.focus();
+                qtyInputRefs.current[lineId]?.select();
+              }, 100);
+            }
+          } catch {
+            // Keep focus in Item Name on error
           }
-        }
-        // If no product selected yet, try to match typed name to a product
-        if (!line.productId && line.name.trim()) {
-          const typed = line.name.trim().toLowerCase();
-          const match = products.find((p: Product) => p.name.toLowerCase() === typed);
-          if (match) {
+        })();
+        return;
+      }
+
+      // If the row already has a product but name was changed, try to match the new name
+      if (line.productId && line.name.trim()) {
+        const product = products.find((p: Product) => p._id === line.productId);
+        if (product && line.name.trim().toLowerCase() !== product.name.trim().toLowerCase()) {
+          const typedLower = line.name.trim().toLowerCase();
+          let newMatch = products.find((p: Product) => p.name.trim().toLowerCase() === typedLower) ?? null;
+
+          if (newMatch) {
             e.preventDefault();
             e.stopPropagation();
-            handleProductSelect(line.id, match);
+            handleProductSelect(line.id, newMatch);
             setTimeout(() => {
               qtyInputRefs.current[line.id]?.focus();
               qtyInputRefs.current[line.id]?.select();
             }, 100);
             return;
           }
+
+          // No match — revert to original name and keep cursor in Item Name
+          e.preventDefault();
+          e.stopPropagation();
+          updateLine(line.id, 'name', product.name);
+          return;
         }
-        // If the row already has a product but name was changed, try to match the new name
-        if (line.productId && line.name.trim()) {
-          const product = products.find((p: Product) => p._id === line.productId);
-          if (product && line.name.toLowerCase() !== product.name.toLowerCase()) {
-            const typed = line.name.trim().toLowerCase();
-            const newMatch = products.find((p: Product) => p.name.toLowerCase() === typed);
-            if (newMatch) {
-              e.preventDefault();
-              e.stopPropagation();
-              handleProductSelect(line.id, newMatch);
-              setTimeout(() => {
-                qtyInputRefs.current[line.id]?.focus();
-                qtyInputRefs.current[line.id]?.select();
-              }, 100);
-              return;
-            }
-            // No match — revert to original name
-            updateLine(line.id, 'name', product.name);
-          }
-          // Move focus to qty field
-          setTimeout(() => {
-            qtyInputRefs.current[line.id]?.focus();
-            qtyInputRefs.current[line.id]?.select();
-          }, 50);
-        }
+
+        // Name unchanged or same product — move focus to next field (Qty)
+        e.preventDefault();
+        e.stopPropagation();
+        setTimeout(() => {
+          qtyInputRefs.current[line.id]?.focus();
+          qtyInputRefs.current[line.id]?.select();
+        }, 50);
       }
     },
-    [products, updateLine, handleProductSelect, lines]
+    [companyId, products, updateLine, handleProductSelect, lines]
   );
 
   // IMEI + Enter: If blank → Item Name, If has value → search, auto-add new row & focus IMEI
@@ -1075,6 +1306,9 @@ export default function PurchaseEntry() {
       const snapshot = rowSnapshotRef.current;
       setLines((prev) =>
         prev.map((l) => (l.id === snapshot.lineId ? { ...snapshot.data } : l))
+      );
+      setEditingNumericCell((prev) =>
+        prev && prev.lineId === snapshot.lineId ? null : prev
       );
     }
     rowSnapshotRef.current = null;
@@ -1159,55 +1393,64 @@ export default function PurchaseEntry() {
     []
   );
 
-  // Wholesale + Enter → Commit row edit, go to next row's Item Name, or create new row if last
+  // Wholesale + Enter → THE commit point: validate (Item Code, Name, Qty, P.Rate, Retail, Wholesale), then commit and move to next row
   const handleWholesaleKeyDown = useCallback(
     (e: React.KeyboardEvent, lineId: string) => {
       if (e.key !== 'Enter') return;
       e.preventDefault();
 
-      // Mark current row as committed (edits are accepted)
-      rowCommittedRef.current = true;
-      rowSnapshotRef.current = null;
+      const rawWholesale = (e.target as HTMLInputElement)?.value ?? '';
+      const wholesaleVal = parseNumericInput(rawWholesale);
+      updateLine(lineId, 'wholesale', wholesaleVal);
 
-      const currentIndex = lines.findIndex((l) => l.id === lineId);
+      setTimeout(() => {
+        setLines((current) => {
+          const currentIndex = current.findIndex((l) => l.id === lineId);
+          const line = current[currentIndex];
+          if (!line) return current;
 
-      // If there is a next row below, snapshot it and move focus to its Item Name field
-      if (currentIndex >= 0 && currentIndex < lines.length - 1) {
-        const nextLine = lines[currentIndex + 1];
-        enterRow(nextLine);
-        setTimeout(() => {
-          const nextInput = itemNameInputRefs.current[nextLine.id];
-          if (nextInput) {
-            nextInput.focus();
+          // ── Mandatory validation before commit (Purchase Entry: Item Code, Name, Qty, P.Rate, Retail, Wholesale) ──
+          if (!line.productCode || !line.name) {
+            setTimeout(() => itemNameInputRefs.current[lineId]?.focus(), 30);
+            return current;
           }
-        }, 50);
-        return;
-      }
-
-      // Last row: create a new row if current line is valid
-      const hasEmptyItemCode = lines.some((l) => !l.productCode);
-      if (hasEmptyItemCode) {
-        return;
-      }
-
-      const line = lines.find((l) => l.id === lineId);
-      if (line && line.productCode && line.name && line.quantity > 0 && line.pRate > 0) {
-        const newLineId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
-        const newLine: LineItem = {
-          ...emptyLine(),
-          id: newLineId,
-        };
-        setLines((prev) => [...prev, newLine]);
-
-        setTimeout(() => {
-          const itemNameInput = itemNameInputRefs.current[newLineId];
-          if (itemNameInput) {
-            itemNameInput.focus();
+          if (line.quantity <= 0) {
+            setTimeout(() => qtyInputRefs.current[lineId]?.focus(), 30);
+            return current;
           }
-        }, 100);
-      }
+          if (line.pRate <= 0) {
+            setTimeout(() => priceInputRefs.current[lineId]?.focus(), 30);
+            return current;
+          }
+          if (line.retail <= 0) {
+            setTimeout(() => retailInputRefs.current[lineId]?.focus(), 30);
+            return current;
+          }
+          if (wholesaleVal <= 0) {
+            setTimeout(() => wholesaleInputRefs.current[lineId]?.focus(), 30);
+            return current;
+          }
+
+          // ── Valid → commit row (only Enter in Wholesale finalizes) ──
+          rowCommittedRef.current = true;
+          rowSnapshotRef.current = null;
+
+          // Move to next row's Item Name, or add new row
+          if (currentIndex >= 0 && currentIndex < current.length - 1) {
+            const nextLine = current[currentIndex + 1];
+            enterRow(nextLine);
+            setTimeout(() => itemNameInputRefs.current[nextLine.id]?.focus(), 30);
+            return current;
+          }
+
+          const newLineId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+          const newLine: LineItem = { ...emptyLine(), id: newLineId };
+          setTimeout(() => itemNameInputRefs.current[newLineId]?.focus(), 50);
+          return [...current, newLine];
+        });
+      }, 50);
     },
-    [lines, enterRow]
+    [updateLine, enterRow]
   );
 
 
@@ -1516,14 +1759,7 @@ export default function PurchaseEntry() {
     await handleClear();
   };
 
-  // Generate unique batch number
-  const generateBatchNumber = (productCode: string, index: number) => {
-    const timestamp = Date.now().toString(36).toUpperCase();
-    const random = Math.random().toString(36).substring(2, 6).toUpperCase();
-    return `BTH-${productCode}-${timestamp}-${random}-${index}`;
-  };
-
-  // Group items into batches based on product, purchase price, and expiry date
+  // Group items into batches (use first item's batch number or '' for backend to assign 00001, 00002, ...) based on product, purchase price, and expiry date
   // For products with allowBatches=false, merge all into a single batch per product
   const groupIntoBatches = (items: LineItem[]) => {
     const batchMap = new Map<string, {
@@ -1545,8 +1781,6 @@ export default function PurchaseEntry() {
       total: number;
       multiUnitId?: string;
     }>();
-
-    let batchIndex = 1;
 
     items.forEach((item) => {
       // Check if product has allowBatches disabled
@@ -1573,9 +1807,9 @@ export default function PurchaseEntry() {
           existingBatch.purchasePrice = totalQty > 0 ? weightedSum / totalQty : item.pRate;
         }
       } else {
-        // Create new batch
+        // Create new batch (use line's batch number from API or '' for backend to assign)
         batchMap.set(batchKey, {
-          batchNumber: generateBatchNumber(item.productCode, batchIndex++),
+          batchNumber: item.batchNumber?.trim() || '',
           productId: item.productId,
           productCode: item.productCode,
           productName: item.name,
@@ -1678,6 +1912,8 @@ export default function PurchaseEntry() {
     // Log for debugging
     console.log('Purchase Entry Data with Batches:', purchaseEntryData);
 
+    const selectedOption = supplierCashOptions.find((s) => s._id === supplierId);
+    const isSupplierSelected = selectedOption?.type === 'supplier';
     const apiData = {
       companyId: companyId!,
       financialYearId: financialYearId!,
@@ -1686,6 +1922,8 @@ export default function PurchaseEntry() {
       date,
       supplierId: supplierId || undefined,
       supplierName: supplierName || undefined,
+      paymentType,
+      ...(paymentType === 'Cash' && isSupplierSelected && cashAccountId ? { cashAccountId } : {}),
       vatType,
       taxMode,
       narration,
@@ -1804,6 +2042,9 @@ export default function PurchaseEntry() {
   return (
     <Box onClick={handlePageClick} sx={{ p: 0.5, bgcolor: '#ffffff', minHeight: '100vh', height: '100%', width: '100%', maxWidth: 1600, mx: 'auto', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', '& .MuiInputLabel-root': { fontWeight: 600, color: '#1e293b' }, ...numberInputStyle }}>
 
+      <Typography component="h1" variant="h6" sx={{ fontWeight: 700, color: '#0f766e', mb: 1, fontSize: '1.1rem' }}>
+        Purchase Entry
+      </Typography>
 
       {/* Purchase Entry Card - B2C style header */}
       <Paper elevation={0} sx={{ px: 2, py: 1.5, mb: 1, borderRadius: 2, bgcolor: 'white', border: '1px solid #e0e7ef' }}>
@@ -1817,6 +2058,25 @@ export default function PurchaseEntry() {
           </Grid>
           <Grid item xs={6} sm={3} md={2} lg={1.7}>
             <DateInput label="Date" value={date} onChange={setDate} size="small" />
+          </Grid>
+          {/* VAT Type + Payment Type - first row, together */}
+          <Grid item xs={12} sm={6} md={3} lg={2.5}>
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'nowrap', alignItems: 'stretch' }}>
+              <Box sx={{ border: '1px solid #e2e8f0', borderRadius: 1.5, px: 1.2, py: 0.5, bgcolor: '#f8fafc', height: '100%' }}>
+                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', letterSpacing: 0.3, mb: 0.2 }}>VAT TYPE</Typography>
+                <RadioGroup row value={vatType} onChange={(e) => setVatType(e.target.value as 'Vat' | 'NonVat')}>
+                  <FormControlLabel value="Vat" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Vat" sx={{ mr: 1, '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
+                  <FormControlLabel value="NonVat" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Non Vat" sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
+                </RadioGroup>
+              </Box>
+              <Box sx={{ border: '1px solid #e2e8f0', borderRadius: 1.5, px: 1.2, py: 0.5, bgcolor: '#f8fafc', height: '100%' }}>
+                <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', letterSpacing: 0.3, mb: 0.2 }}>PAYMENT TYPE</Typography>
+                <RadioGroup row value={paymentType} onChange={(e) => setPaymentType(e.target.value as 'Cash' | 'Credit')}>
+                  <FormControlLabel value="Cash" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Cash" sx={{ mr: 1, '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
+                  <FormControlLabel value="Credit" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Credit" sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
+                </RadioGroup>
+              </Box>
+            </Box>
           </Grid>
           <Grid item xs={6} sm={3} md={2} lg={1.8}>
             <TextField
@@ -1929,26 +2189,6 @@ export default function PurchaseEntry() {
               InputLabelProps={{ shrink: true }}
               sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5 }, ...(supplierId ? { '& .MuiOutlinedInput-root': { bgcolor: '#f1f5f9' } } : {}) }}
             />
-          </Grid>
-          {/* VAT Type - B2C style box */}
-          <Grid item xs={6} sm={3} md={2} lg={1.5}>
-            <Box sx={{ border: '1px solid #e2e8f0', borderRadius: 1.5, px: 1.2, py: 0.5, bgcolor: '#f8fafc', height: '100%' }}>
-              <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', letterSpacing: 0.3, mb: 0.2 }}>VAT TYPE</Typography>
-              <RadioGroup row value={vatType} onChange={(e) => setVatType(e.target.value as 'Vat' | 'NonVat')}>
-                <FormControlLabel value="Vat" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Vat" sx={{ mr: 1, '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
-                <FormControlLabel value="NonVat" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Non Vat" sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
-              </RadioGroup>
-            </Box>
-          </Grid>
-          {/* Payment - same style as VAT Type */}
-          <Grid item xs={6} sm={3} md={2} lg={1.5}>
-            <Box sx={{ border: '1px solid #e2e8f0', borderRadius: 1.5, px: 1.2, py: 0.5, bgcolor: '#f8fafc', height: '100%' }}>
-              <Typography sx={{ fontSize: '0.7rem', fontWeight: 600, color: '#64748b', letterSpacing: 0.3, mb: 0.2 }}>PAYMENT</Typography>
-              <RadioGroup row value={paymentType} onChange={(e) => setPaymentType(e.target.value as 'Cash' | 'Credit')}>
-                <FormControlLabel value="Cash" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Cash" sx={{ mr: 1, '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
-                <FormControlLabel value="Credit" control={<Radio size="small" sx={{ p: 0.3 }} />} label="Credit" sx={{ '& .MuiFormControlLabel-label': { fontSize: '0.78rem' } }} />
-              </RadioGroup>
-            </Box>
           </Grid>
           {/* Navigation - B2C style buttons */}
           <Grid item xs="auto">
@@ -2190,7 +2430,7 @@ export default function PurchaseEntry() {
                         }
                       }}
                       onHighlightChange={handleProductHighlight}
-                      renderInput={(params) => <TextField {...params} size="small" variant="outlined" inputRef={(el) => { itemNameInputRefs.current[line.id] = el; }} onKeyDown={(e) => handleItemNameKeyDown(e, line)} sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75, fontSize: '0.875rem' } }} />}
+                      renderInput={(params) => <TextField {...params} size="small" variant="outlined" inputRef={(el) => { itemNameInputRefs.current[line.id] = el; }} onKeyDownCapture={(e) => { if (e.key === 'Enter') handleItemNameKeyDown(e, line); }} sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.75, fontSize: '0.875rem' } }} />}
                       renderOption={(props, opt) => (
                         <li {...props} key={opt._id} style={{
                           fontSize: '0.875rem',
@@ -2463,103 +2703,117 @@ export default function PurchaseEntry() {
         <Grid item xs={12} md={6}>
           <Paper elevation={0} sx={{ p: 1.5, bgcolor: 'white', borderRadius: 1, border: '2px solid #000000' }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1e293b', mb: 0.5 }}>Summary</Typography>
-            <Grid container spacing={1}>
-              <Grid item xs={3}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Gross Total</Typography>
-                <TextField size="small" value={calculations.itemsGross.toFixed(2)} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
-              </Grid>
-              <Grid item xs={3}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Total VAT</Typography>
-                <TextField size="small" value={calculations.totalVat.toFixed(2)} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
-              </Grid>
+            <Grid container spacing={1} sx={{ alignItems: 'stretch' }}>
+              {/* Left half: stacked adjustment fields (30% smaller width/height) */}
               <Grid item xs={6}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Total Items</Typography>
-                <TextField size="small" value={calculations.totalItems} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.6, width: '70%' }}>
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.4, fontSize: '0.7rem' }}>Other Disc %</Typography>
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={editingNumericCell?.field === 'otherDiscPercent' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscPercent === 0 ? '' : String(otherDiscPercent))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscPercent', value: otherDiscPercent === 0 ? '' : String(otherDiscPercent) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscPercent' ? editingNumericCell.value : ''; handleOtherDiscPercentChange(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? null : prev); }}
+                      inputRef={otherDiscPercentRef}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => otherDiscountRef.current?.focus(), 50); } }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5, minHeight: 28 }, '& .MuiOutlinedInput-input': { py: 0.4, fontSize: '0.75rem' } }}
+                    />
+                  </Box>
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.4, fontSize: '0.7rem' }}>Other Discount</Typography>
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={editingNumericCell?.field === 'otherDiscount' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscount === 0 ? '' : String(otherDiscount))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscount', value: otherDiscount === 0 ? '' : String(otherDiscount) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscount' ? editingNumericCell.value : ''; setOtherDiscount(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? null : prev); }}
+                      inputRef={otherDiscountRef}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => otherChargesRef.current?.focus(), 50); } }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5, minHeight: 28 }, '& .MuiOutlinedInput-input': { py: 0.4, fontSize: '0.75rem' } }}
+                    />
+                  </Box>
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.4, fontSize: '0.7rem' }}>Other Charges</Typography>
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={editingNumericCell?.field === 'otherCharges' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? null : prev); }}
+                      inputRef={otherChargesRef}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => freightRef.current?.focus(), 50); } }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5, minHeight: 28 }, '& .MuiOutlinedInput-input': { py: 0.4, fontSize: '0.75rem' } }}
+                    />
+                  </Box>
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.4, fontSize: '0.7rem' }}>Freight</Typography>
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={editingNumericCell?.field === 'freightCharge' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (freightCharge === 0 ? '' : String(freightCharge))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'freightCharge', value: freightCharge === 0 ? '' : String(freightCharge) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.field === 'freightCharge' ? editingNumericCell.value : ''; setFreightCharge(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? null : prev); }}
+                      inputRef={freightRef}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => roundOffRef.current?.focus(), 50); } }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5, minHeight: 28 }, '& .MuiOutlinedInput-input': { py: 0.4, fontSize: '0.75rem' } }}
+                    />
+                  </Box>
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.4, fontSize: '0.7rem' }}>Round Off</Typography>
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={editingNumericCell?.field === 'roundOff' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'roundOff' ? null : prev); }}
+                      inputRef={roundOffRef}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => saveButtonRef.current?.focus(), 50); } }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5, minHeight: 28 }, '& .MuiOutlinedInput-input': { py: 0.4, fontSize: '0.75rem' } }}
+                    />
+                  </Box>
+                </Box>
               </Grid>
-              <Grid item xs={4}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Other Disc %</Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={editingNumericCell?.field === 'otherDiscPercent' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscPercent === 0 ? '' : String(otherDiscPercent))}
-                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscPercent', value: otherDiscPercent === 0 ? '' : String(otherDiscPercent) }); }}
-                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? { ...prev, value: e.target.value } : prev)}
-                  onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscPercent' ? editingNumericCell.value : ''; handleOtherDiscPercentChange(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? null : prev); }}
-                  inputRef={otherDiscPercentRef}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => otherDiscountRef.current?.focus(), 50); } }}
-                  fullWidth
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                />
-              </Grid>
-              <Grid item xs={4}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Other Discount</Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={editingNumericCell?.field === 'otherDiscount' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscount === 0 ? '' : String(otherDiscount))}
-                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscount', value: otherDiscount === 0 ? '' : String(otherDiscount) }); }}
-                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? { ...prev, value: e.target.value } : prev)}
-                  onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscount' ? editingNumericCell.value : ''; setOtherDiscount(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? null : prev); }}
-                  inputRef={otherDiscountRef}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => otherChargesRef.current?.focus(), 50); } }}
-                  fullWidth
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                />
-              </Grid>
-              <Grid item xs={4}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Other Charges</Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={editingNumericCell?.field === 'otherCharges' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))}
-                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) }); }}
-                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)}
-                  onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? null : prev); }}
-                  inputRef={otherChargesRef}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => freightRef.current?.focus(), 50); } }}
-                  fullWidth
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                />
-              </Grid>
-              <Grid item xs={4}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Freight</Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={editingNumericCell?.field === 'freightCharge' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (freightCharge === 0 ? '' : String(freightCharge))}
-                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'freightCharge', value: freightCharge === 0 ? '' : String(freightCharge) }); }}
-                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? { ...prev, value: e.target.value } : prev)}
-                  onBlur={() => { const raw = editingNumericCell?.field === 'freightCharge' ? editingNumericCell.value : ''; setFreightCharge(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? null : prev); }}
-                  inputRef={freightRef}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => roundOffRef.current?.focus(), 50); } }}
-                  fullWidth
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                />
-              </Grid>
-              <Grid item xs={4}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Round Off</Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={editingNumericCell?.field === 'roundOff' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))}
-                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) }); }}
-                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev)}
-                  onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setEditingNumericCell((prev) => prev?.field === 'roundOff' ? null : prev); }}
-                  inputRef={roundOffRef}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => saveButtonRef.current?.focus(), 50); } }}
-                  fullWidth
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                />
-              </Grid>
-              <Grid item xs={4}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Grand Total</Typography>
-                <TextField
-                  size="small"
-                  value={calculations.grandTotal.toFixed(2)}
-                  InputProps={{ readOnly: true }}
-                  fullWidth
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: THEME.primary }, '& .MuiInputBase-input': { fontWeight: 700, fontSize: '1.1rem', color: 'white' } }}
-                />
+              {/* Right half: totals */}
+              <Grid item xs={6}>
+                <Grid container spacing={1}>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.5, fontSize: '0.75rem' }}>Gross Total</Typography>
+                    <TextField size="small" value={calculations.itemsGross.toFixed(2)} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
+                  </Grid>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.5, fontSize: '0.75rem' }}>Total VAT</Typography>
+                    <TextField size="small" value={calculations.totalVat.toFixed(2)} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
+                  </Grid>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.5, fontSize: '0.7rem' }}>Before tax (incl. adj.)</Typography>
+                    <TextField size="small" value={(calculations.grandTotal - calculations.totalVat).toFixed(2)} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
+                  </Grid>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.5, fontSize: '0.75rem' }}>Total Items</Typography>
+                    <TextField size="small" value={calculations.totalItems} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.5, fontSize: '0.75rem' }}>Grand Total</Typography>
+                    <TextField
+                      size="small"
+                      value={calculations.grandTotal.toFixed(2)}
+                      InputProps={{ readOnly: true }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: THEME.primary }, '& .MuiInputBase-input': { fontWeight: 700, fontSize: '1.1rem', color: 'white' } }}
+                    />
+                  </Grid>
+                </Grid>
               </Grid>
             </Grid>
           </Paper>

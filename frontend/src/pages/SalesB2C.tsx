@@ -290,6 +290,8 @@ export default function SalesB2C() {
   // Row edit commit/revert: snapshot stores old row data before editing
   const rowSnapshotRef = useRef<{ lineId: string; data: LineItem } | null>(null);
   const rowCommittedRef = useRef(false);
+  // Item name field: snapshot before edit so we can undo if user clears then blurs without selecting
+  const itemNameSnapshotRef = useRef<{ lineId: string; data: LineItem } | null>(null);
 
   // Summary
   const [cashReceived, setCashReceived] = useState(0);
@@ -542,6 +544,98 @@ export default function SalesB2C() {
     }
   }, [customers, pendingCustomerName]);
 
+  // Pre-fill from Sales Order (Quotation) when navigated via "Post to Sales"
+  useEffect(() => {
+    const state = routeLocation.state as {
+      fromQuotation?: boolean;
+      quotationInvoiceNo?: string;
+      customerId?: string | null;
+      customerName?: string;
+      customerAddress?: string;
+      date?: string;
+      vatType?: 'Vat' | 'NonVat';
+      taxMode?: 'inclusive' | 'exclusive';
+      rateType?: 'Retail' | 'WSale' | 'Special1' | 'Special2';
+      otherDiscount?: number;
+      otherCharges?: number;
+      freightCharge?: number;
+      roundOff?: number;
+      narration?: string;
+      shippingName?: string;
+      shippingAddress?: string;
+      shippingPhone?: string;
+      shippingContactPerson?: string;
+      lines?: Array<{
+        id: string;
+        productId: string;
+        productCode: string;
+        imei?: string;
+        name: string;
+        unitId: string;
+        unitName: string;
+        availableUnits?: Array<{ id: string; name: string; isMultiUnit?: boolean; multiUnitId?: string }>;
+        quantity: number;
+        price: number;
+        purchasePrice?: number;
+        gross: number;
+        discPercent?: number;
+        discAmount?: number;
+        vatAmount?: number;
+        total: number;
+      }>;
+    } | null;
+    if (!state?.fromQuotation || !state.lines?.length || !companyId || !financialYearId) return;
+    setCustomerId(state.customerId ?? null);
+    setCustomerName(state.customerName ?? 'CASH');
+    setCustomerAddress(state.customerAddress ?? '');
+    setDate(state.date ?? getCurrentDate());
+    setVatType(state.vatType ?? 'Vat');
+    setTaxMode(state.taxMode ?? 'inclusive');
+    setRateType(state.rateType ?? 'WSale');
+    setOtherDiscount(state.otherDiscount ?? 0);
+    setOtherCharges(state.otherCharges ?? 0);
+    setFreightCharge(state.freightCharge ?? 0);
+    setLendAddLess(0);
+    setRoundOff(state.roundOff ?? 0);
+    setNarration(state.narration ?? '');
+    setShippingName(state.shippingName ?? '');
+    setShippingAddress(state.shippingAddress ?? '');
+    setShippingPhone(state.shippingPhone ?? '');
+    setShippingContactPerson(state.shippingContactPerson ?? '');
+    const newLines: LineItem[] = state.lines.map((l) => {
+      const au = (l.availableUnits && l.availableUnits.length > 0)
+        ? l.availableUnits.map((u) => ({ id: u.id, name: u.name, isMultiUnit: u.isMultiUnit ?? false, multiUnitId: u.multiUnitId }))
+        : (l.unitId && l.unitName ? [{ id: l.unitId, name: l.unitName, isMultiUnit: false }] : []);
+      return {
+        id: l.id,
+        productId: l.productId,
+        productCode: l.productCode,
+        imei: l.imei ?? '',
+        name: l.name,
+        unitId: l.unitId ?? '',
+        unitName: l.unitName ?? '',
+        availableUnits: au,
+        quantity: l.quantity,
+        baseStockPieces: 0,
+        price: l.price,
+        purchasePrice: l.purchasePrice ?? 0,
+        gross: l.gross,
+        discPercent: l.discPercent ?? 0,
+        discAmount: l.discAmount ?? 0,
+        vatAmount: l.vatAmount ?? 0,
+        total: l.total,
+      };
+    });
+    setLines(newLines.length > 0 ? newLines : [emptyLine()]);
+    setInvoiceId(null);
+    setCashReceived(0);
+    setCardAmount(0);
+    setCardAccountId(null);
+    setOldBalance(0);
+    loadNextInvoiceNo();
+    window.history.replaceState({}, '', routeLocation.pathname);
+  }, [companyId, financialYearId, routeLocation.pathname, routeLocation.state]);
+
   const loadNextInvoiceNo = async () => {
     try {
       const res = await salesApi.getNextB2CInvoiceNo(companyId!, financialYearId!);
@@ -655,6 +749,51 @@ export default function SalesB2C() {
       // ignore
     }
   };
+
+  // Clear product/IMEI from a line when user clears item name (keep line id)
+  const clearLineProduct = useCallback((lineId: string) => {
+    setLines((prev) =>
+      prev.map((l) => {
+        if (l.id !== lineId) return l;
+        return {
+          ...l,
+          name: '',
+          productId: '',
+          productCode: '',
+          imei: '',
+          unitId: '',
+          unitName: '',
+          availableUnits: [],
+          quantity: 0,
+          baseStockPieces: 0,
+          batchMaxPieces: undefined,
+          price: 0,
+          purchasePrice: 0,
+          gross: 0,
+          discPercent: 0,
+          discAmount: 0,
+          vatAmount: 0,
+          total: 0,
+        };
+      })
+    );
+  }, []);
+
+  // Item name focus: save snapshot so we can undo if user clears then blurs without selecting
+  const handleItemNameFocus = useCallback((line: LineItem) => {
+    itemNameSnapshotRef.current = { lineId: line.id, data: { ...line } };
+  }, []);
+
+  // Item name blur: if user cleared and did not select a product, restore from snapshot
+  const handleItemNameBlur = useCallback((line: LineItem) => {
+    const snap = itemNameSnapshotRef.current;
+    if (snap && snap.lineId === line.id && snap.data.productId && !line.productId) {
+      setLines((prev) =>
+        prev.map((l) => (l.id === line.id ? { ...l, ...snap.data } : l))
+      );
+    }
+    itemNameSnapshotRef.current = null;
+  }, []);
 
   // Line item handlers
   const updateLine = useCallback(
@@ -880,6 +1019,7 @@ export default function SalesB2C() {
 
       setSelectedProductInfo({
         profit,
+        totalStock, // Show actual total stock in panel (not remaining after other rows)
         stock: remainingStock,
         purchaseRate: purchaseRate,
         retailPrice: selectedBatch?.retail || (product.retailPrice ?? 0),
@@ -948,11 +1088,28 @@ export default function SalesB2C() {
         return false;
       }
 
+      // Always fetch product by ID so batch decision uses server truth (list can have stale/wrong allowBatches)
+      let productToUse = product;
+      if (companyId) {
+        try {
+          const res = await productApi.get(product._id, companyId);
+          const fetched = res.data?.data as { allowBatches?: boolean } | undefined;
+          if (fetched) {
+            productToUse = { ...product, allowBatches: fetched.allowBatches === true };
+          }
+        } catch {
+          // use original product
+        }
+      }
+
       // Check if product has multiple batches (from backend)
-      const batches = await getBatchesForProduct(product._id);
-      
-      if (product.allowBatches === false) {
-        // Batches disabled – merge all batches into one with average purchase rate
+      const batches = await getBatchesForProduct(productToUse._id);
+      // Only show batch dialog when batch selection is explicitly enabled (allowBatches === true).
+      // When allowBatches is false or undefined, treat as merged – never show batch list.
+      const batchSelectionEnabled = (productToUse as { allowBatches?: boolean }).allowBatches === true;
+
+      if (!batchSelectionEnabled) {
+        // Merged: batches disabled or not set – merge all batches into one with average purchase rate
         if (batches.length > 0) {
           const nonZeroBatches = batches.filter((b) => b.quantity > 0);
           const avgPurchasePrice = nonZeroBatches.length > 0
@@ -975,26 +1132,25 @@ export default function SalesB2C() {
             retail: avgRetail,
             wholesale: avgWholesale,
           };
-          return await completeProductSelection(lineId, product, mergedBatch, matchedMultiUnitId, searchedImei);
+          return await completeProductSelection(lineId, productToUse, mergedBatch, matchedMultiUnitId, searchedImei);
         } else {
-          return await completeProductSelection(lineId, product, undefined, matchedMultiUnitId, searchedImei);
+          return await completeProductSelection(lineId, productToUse, undefined, matchedMultiUnitId, searchedImei);
         }
-      } else if (batches.length > 1) {
-        // Multiple batches - show selection dialog (stock check happens on batch select)
+      }
+      if (batches.length > 1) {
+        // Multiple batches and batch selection enabled – show selection dialog
         setAvailableBatches(batches);
-        setPendingProductSelection({ lineId, product, matchedMultiUnitId, searchedImei });
+        setPendingProductSelection({ lineId, product: productToUse, matchedMultiUnitId, searchedImei });
         setFocusedBatchIndex(0);
         setBatchDialogOpen(true);
         return false; // Don't add row yet — user still picking a batch
-      } else if (batches.length === 1) {
-        // Single batch - use it directly
-        return await completeProductSelection(lineId, product, batches[0], matchedMultiUnitId, searchedImei);
-      } else {
-        // No batches - proceed without batch info
-        return await completeProductSelection(lineId, product, undefined, matchedMultiUnitId, searchedImei);
       }
+      if (batches.length === 1) {
+        return await completeProductSelection(lineId, productToUse, batches[0], matchedMultiUnitId, searchedImei);
+      }
+      return await completeProductSelection(lineId, productToUse, undefined, matchedMultiUnitId, searchedImei);
     },
-    [getBatchesForProduct, completeProductSelection, updateLine]
+    [getBatchesForProduct, completeProductSelection, updateLine, companyId]
   );
 
   // Handle batch selection from dialog
@@ -1174,6 +1330,12 @@ export default function SalesB2C() {
       setLines((prev) =>
         prev.map((l) => (l.id === snapshot.lineId ? { ...snapshot.data } : l))
       );
+      // Clear editing cell for the reverted row so fields show reverted values (e.g. old qty/price) not stale blank
+      if (snapshot.lineId) {
+        setEditingNumericCell((prev) =>
+          prev && prev.lineId === snapshot.lineId ? null : prev
+        );
+      }
     }
     rowSnapshotRef.current = null;
     rowCommittedRef.current = false;
@@ -1197,34 +1359,74 @@ export default function SalesB2C() {
     }
   }, [revertUncommittedRow]);
 
-  // Open batch dialog for a line that has a batched product (called only on Enter key in item field)
-  const openBatchDialogForLine = useCallback(async (line: LineItem) => {
-    if (!line.productId) return;
-    const product = products.find((p) => p._id === line.productId);
-    const isBatchedProduct = product?.allowBatches === true || (line.batchMaxPieces != null && line.batchMaxPieces > 0);
-    if (!product || !isBatchedProduct) return;
+  // Open batch dialog only when product has allowBatches from server (e.g. return to item field and press Enter)
+  const openBatchDialogForLine = useCallback(async (line: LineItem): Promise<boolean> => {
+    if (!line.productId) return false;
+    let product = products.find((p) => p._id === line.productId);
+    if (!product) return false;
+    if (companyId) {
+      try {
+        const res = await productApi.get(product._id, companyId);
+        const fetched = res.data?.data as { allowBatches?: boolean } | undefined;
+        if (fetched) {
+          product = { ...product, allowBatches: fetched.allowBatches === true };
+        }
+      } catch {
+        // use original product
+      }
+    }
+    if ((product as { allowBatches?: boolean }).allowBatches !== true) return false;
     const batches = await getBatchesForProduct(product._id);
     if (batches.length > 1) {
       setAvailableBatches(batches);
       setPendingProductSelection({ lineId: line.id, product });
       setFocusedBatchIndex(0);
       setBatchDialogOpen(true);
+      return true;
     }
-  }, [products, getBatchesForProduct]);
+    return false;
+  }, [products, getBatchesForProduct, companyId]);
 
   // Handle Enter key on Item Name field - auto-select matching product or verify name; Enter on batched product opens batch dialog
   const handleItemNameKeyDown = useCallback((e: React.KeyboardEvent, line: LineItem) => {
     if (e.key === 'Enter') {
-      // If row already has a batched product, Enter always opens batch dialog (e.g. return to item field and press Enter)
-      if (line.productId) {
-        const product = products.find((p) => p._id === line.productId);
-        const isBatchedProduct = product?.allowBatches === true || (line.batchMaxPieces != null && line.batchMaxPieces > 0);
-        if (isBatchedProduct) {
+      // Use current input value from DOM so we don't rely on state (user may have just typed and state not yet updated)
+      const inputEl = (e.target as HTMLElement)?.closest?.('input') || (e.target as HTMLInputElement) || itemNameInputRefs.current[line.id];
+      const currentTyped = (inputEl && 'value' in inputEl ? (inputEl as HTMLInputElement).value : line.name) ?? '';
+      const typed = currentTyped.trim();
+
+      // If user typed an exact product name (match by name), select that product immediately without waiting for list selection.
+      // Only run when: no product yet, or typed name is different from current product (so we don't re-run selection on same product).
+      if (typed) {
+        const exactMatch = products.find((p) => p.name.trim().toLowerCase() === typed.toLowerCase());
+        const currentProduct = line.productId ? products.find((p) => p._id === line.productId) : null;
+        const isDifferentProduct = !currentProduct || currentProduct.name.trim().toLowerCase() !== typed.toLowerCase();
+        if (exactMatch && isDifferentProduct) {
           e.preventDefault();
           e.stopPropagation();
-          openBatchDialogForLine(line);
+          handleProductSelect(line.id, exactMatch).then(() => {
+            setTimeout(() => {
+              qtyInputRefs.current[line.id]?.focus();
+              qtyInputRefs.current[line.id]?.select();
+            }, 100);
+          });
           return;
         }
+      }
+
+      // If row already has a product, Enter opens batch dialog only when server says allowBatches (don't use list)
+      if (line.productId) {
+        e.preventDefault();
+        e.stopPropagation();
+        openBatchDialogForLine(line).then((opened) => {
+          if (!opened) {
+            setTimeout(() => {
+              qtyInputRefs.current[line.id]?.focus();
+              qtyInputRefs.current[line.id]?.select();
+            }, 50);
+          }
+        });
+        return;
       }
 
       // Check if the Autocomplete dropdown is open — if so, let the Autocomplete handle the selection
@@ -1238,7 +1440,7 @@ export default function SalesB2C() {
       }
 
       // If item name is blank and no product selected
-      if (!line.productId && !line.name.trim()) {
+      if (!line.productId && !typed) {
         const currentIndex = lines.findIndex((l) => l.id === line.id);
         if (currentIndex === lines.length - 1) {
           e.preventDefault();
@@ -1247,42 +1449,13 @@ export default function SalesB2C() {
           return;
         }
       }
-      // If no product selected yet, try to match typed name to a product
-      if (!line.productId && line.name.trim()) {
-        const typed = line.name.trim().toLowerCase();
-        const match = products.find((p) => p.name.toLowerCase() === typed);
-        if (match) {
-          e.preventDefault();
-          e.stopPropagation();
-          handleProductSelect(line.id, match).then(() => {
-            setTimeout(() => {
-              qtyInputRefs.current[line.id]?.focus();
-              qtyInputRefs.current[line.id]?.select();
-            }, 100);
-          });
-          return;
-        }
-      }
-      // If the row already has a product
+      // If the row already has a product but name was edited to another exact match (handled above); otherwise restore/correct name
       if (line.productId) {
         const product = products.find((p) => p._id === line.productId);
         if (product && line.name !== product.name) {
-          const typed = line.name.trim().toLowerCase();
-          const newMatch = products.find((p) => p.name.toLowerCase() === typed);
-          if (newMatch) {
-            e.preventDefault();
-            e.stopPropagation();
-            handleProductSelect(line.id, newMatch).then(() => {
-              setTimeout(() => {
-                qtyInputRefs.current[line.id]?.focus();
-                qtyInputRefs.current[line.id]?.select();
-              }, 100);
-            });
-            return;
-          }
           updateLine(line.id, 'name', product.name);
         }
-        // Move focus to qty field (batched product case already handled at top)
+        // Move focus to qty field (batched product case already handled above)
         setTimeout(() => {
           qtyInputRefs.current[line.id]?.focus();
           qtyInputRefs.current[line.id]?.select();
@@ -1957,6 +2130,7 @@ export default function SalesB2C() {
     setInvoiceNo(invoice.invoiceNo as string);
     setDate((invoice.date as string)?.split('T')[0] || new Date().toISOString().split('T')[0]);
     setVatType((invoice.vatType as 'Vat' | 'NonVat') || 'Vat');
+    setTaxMode((invoice.taxMode as 'inclusive' | 'exclusive') ?? 'inclusive');
     setPaymentType((invoice.paymentType as 'Cash' | 'Credit') || 'Cash');
     setRateType((invoice.rateType as 'Retail' | 'WSale' | 'Special1' | 'Special2') || 'WSale');
     setCustomerId(invoice.customerId ? (invoice.customerId as { _id: string })._id : null);
@@ -2831,14 +3005,32 @@ export default function SalesB2C() {
                       isOptionEqualToValue={(opt, val) => opt._id === val._id}
                       getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt.name || '')}
                       inputValue={line.name}
-                      onInputChange={(_, v) => updateLine(line.id, 'name', v)}
+                      onInputChange={(_, v) => {
+                        if (v.trim() === '') {
+                          clearLineProduct(line.id);
+                        } else {
+                          updateLine(line.id, 'name', v);
+                        }
+                      }}
                       onChange={(_, v) => {
                         if (v && typeof v !== 'string') {
+                          itemNameSnapshotRef.current = null;
                           handleProductSelect(line.id, v);
                         }
                       }}
                       onHighlightChange={handleProductHighlight}
-                      renderInput={(params) => <TextField {...params} size="small" variant="outlined" inputRef={(el) => { itemNameInputRefs.current[line.id] = el; }} onKeyDown={(e) => handleItemNameKeyDown(e, line)} sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }} />}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          size="small"
+                          variant="outlined"
+                          inputRef={(el) => { itemNameInputRefs.current[line.id] = el; }}
+                          onFocus={() => handleItemNameFocus(line)}
+                          onBlur={() => handleItemNameBlur(line)}
+                          onKeyDown={(e) => handleItemNameKeyDown(e, line)}
+                          sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'white', borderRadius: 1, '& fieldset': { borderColor: '#e2e8f0' } }, '& .MuiOutlinedInput-input': { py: 0.3, fontSize: '0.82rem' } }}
+                        />
+                      )}
                       renderOption={(props, opt) => (
                         <li {...props} key={opt._id} style={{ 
                           fontSize: '0.82rem', 
@@ -3143,6 +3335,10 @@ export default function SalesB2C() {
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                   <Typography sx={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 500 }}>This Bill</Typography>
                   <Typography sx={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e293b' }}>{calculations.subTotal.toFixed(2)}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                  <Typography sx={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 500 }}>Before tax (incl. adjustments)</Typography>
+                  <Typography sx={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e293b' }}>{(calculations.grandTotal - calculations.totalVat).toFixed(2)}</Typography>
                 </Box>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                   <Typography sx={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 500 }}>Total VAT</Typography>

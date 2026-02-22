@@ -46,11 +46,12 @@ import {
   PauseCircleOutline as HoldIcon,
   PlaylistAdd as HoldListIcon,
   RestorePage as RestoreIcon,
+  Send as SendIcon,
 } from '@mui/icons-material';
 import { useSelector, useDispatch } from 'react-redux';
 import { useNavigate, useLocation } from 'react-router-dom';
 import type { RootState } from '../store';
-import { productApi, ledgerAccountApi, purchaseOrderApi, stockApi } from '../services/api';
+import { productApi, ledgerAccountApi, purchaseApi, purchaseOrderApi, stockApi } from '../services/api';
 import type { PurchaseOrderListItem } from '../services/api';
 import DateInput, { getCurrentDate } from '../components/DateInput';
 import { setDrawerOpen } from '../store/slices/appSlice';
@@ -547,6 +548,7 @@ export default function PurchaseOrderEntry() {
       setDate(inv.date);
       setSupplierInvNo(inv.supplierInvoiceNo || '');
       setVatType(inv.vatType || 'Vat');
+      setTaxMode((inv.taxMode as 'inclusive' | 'exclusive') ?? 'inclusive');
       setSupplierId(inv.supplierId || null);
       setSupplierName(inv.supplierName || '');
       setNarration(inv.narration || '');
@@ -807,10 +809,16 @@ export default function PurchaseOrderEntry() {
       // Calculate profit percentage
       const profitPercent = usePrice > 0 && useRetail > 0 ? ((useRetail - usePrice) / usePrice) * 100 : 0;
 
-      // Generate batch number for new line
-      const timestamp = Date.now().toString(36).toUpperCase();
-      const random = Math.random().toString(36).substring(2, 6).toUpperCase();
-      const batchNum = `BTH-${product.code || 'XXX'}-${timestamp}-${random}`;
+      // Get next batch number from server (00001, 00002, ...) or leave empty for backend to assign
+      let batchNum = '';
+      try {
+        if (companyId) {
+          const res = await purchaseApi.getNextBatchNo(companyId);
+          batchNum = res.data?.data?.batchNumber ?? '';
+        }
+      } catch {
+        // leave empty; backend will assign on save
+      }
 
       setLines((prev) =>
         prev.map((line) => {
@@ -953,20 +961,6 @@ export default function PurchaseOrderEntry() {
   const handleItemNameKeyDown = useCallback(
     (e: React.KeyboardEvent, line: LineItem) => {
       if (e.key === 'Enter') {
-        // Check if the Autocomplete dropdown is open — if so, let the Autocomplete handle the selection
-        const input = itemNameInputRefs.current[line.id];
-        if (input) {
-          const isDropdownOpen = input.getAttribute('aria-expanded') === 'true';
-          if (isDropdownOpen) {
-            // Dropdown is open — Autocomplete will handle the Enter key to select the highlighted option
-            setTimeout(() => {
-              qtyInputRefs.current[line.id]?.focus();
-              qtyInputRefs.current[line.id]?.select();
-            }, 150);
-            return;
-          }
-        }
-
         // If item name is blank (allow having a productId if name was cleared manually) — check if last row, jump to other disc
         if (!line.name.trim()) {
           const currentIndex = lines.findIndex((l) => l.id === line.id);
@@ -1134,55 +1128,90 @@ export default function PurchaseOrderEntry() {
     []
   );
 
-  // Wholesale + Enter → Commit row edit, go to next row's Item Name, or create new row if last
+  // Wholesale + Enter → Apply wholesale value, validate row, then commit and move to next row (or focus first invalid field)
   const handleWholesaleKeyDown = useCallback(
     (e: React.KeyboardEvent, lineId: string) => {
       if (e.key !== 'Enter') return;
       e.preventDefault();
 
-      // Mark current row as committed (edits are accepted)
-      rowCommittedRef.current = true;
-      rowSnapshotRef.current = null;
+      const rawWholesale = (e.target as HTMLInputElement)?.value ?? '';
+      const wholesaleVal = parseNumericInput(rawWholesale);
+      setEditingNumericCell((prev) => (prev && prev.lineId === lineId && prev.field === 'wholesale' ? null : prev));
+      setIsSaved(false);
 
-      const currentIndex = lines.findIndex((l) => l.id === lineId);
+      setLines((current) => {
+        const idx = current.findIndex((l) => l.id === lineId);
+        const line = current[idx];
+        if (!line) return current;
 
-      // If there is a next row below, snapshot it and move focus to its Item Name field
-      if (currentIndex >= 0 && currentIndex < lines.length - 1) {
-        const nextLine = lines[currentIndex + 1];
-        enterRow(nextLine);
-        setTimeout(() => {
-          const nextInput = itemNameInputRefs.current[nextLine.id];
-          if (nextInput) {
-            nextInput.focus();
+        const updated = { ...line, wholesale: wholesaleVal };
+        updated.gross = parseFloat((updated.quantity * updated.pRate).toFixed(2));
+        const net = parseFloat((updated.gross - updated.discAmount).toFixed(2));
+        const vt = calcVatAndTotal(net, vatType === 'Vat');
+        updated.vatAmount = vt.vatAmount;
+        updated.total = vt.total;
+
+          const product = products.find((p) => p._id === updated.productId);
+
+          // Mandatory validation before commit (Purchase Order: Item Code, Name, IMEI if applicable, Qty, P Rate, Retail, Wholesale)
+          if (!updated.productCode || !String(updated.productCode).trim()) {
+            setTimeout(() => itemNameInputRefs.current[lineId]?.focus(), 30);
+            return current.map((l) => (l.id === lineId ? updated : l));
           }
-        }, 50);
-        return;
-      }
-
-      // Last row: create a new row if current line is valid
-      const hasEmptyItemCode = lines.some((l) => !l.productCode);
-      if (hasEmptyItemCode) {
-        return;
-      }
-
-      const line = lines.find((l) => l.id === lineId);
-      if (line && line.productCode && line.name && line.quantity > 0 && line.pRate > 0) {
-        const newLineId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
-        const newLine: LineItem = {
-          ...emptyLine(),
-          id: newLineId,
-        };
-        setLines((prev) => [...prev, newLine]);
-
-        setTimeout(() => {
-          const itemNameInput = itemNameInputRefs.current[newLineId];
-          if (itemNameInput) {
-            itemNameInput.focus();
+          if (!updated.name || !String(updated.name).trim()) {
+            setTimeout(() => itemNameInputRefs.current[lineId]?.focus(), 30);
+            return current.map((l) => (l.id === lineId ? updated : l));
           }
-        }, 100);
-      }
+          if (!product || product.name?.trim() !== updated.name.trim() || (product.code || '').trim() !== (updated.productCode || '').trim()) {
+            setTimeout(() => itemNameInputRefs.current[lineId]?.focus(), 30);
+            return current.map((l) => (l.id === lineId ? updated : l));
+          }
+          const hasImei = !!(product.imei && String(product.imei).trim()) || (product.multiUnits && product.multiUnits.some((mu) => mu.imei && String(mu.imei).trim()));
+          if (hasImei) {
+            const mainImei = String(product.imei || '').trim();
+            const multiImeis = (product.multiUnits || []).map((mu) => String(mu.imei || '').trim()).filter(Boolean);
+            const lineImei = String(updated.imei || '').trim();
+            const validImei = lineImei && (mainImei === lineImei || multiImeis.includes(lineImei));
+            if (!validImei) {
+              setTimeout(() => imeiInputRefs.current[lineId]?.focus(), 30);
+              return current.map((l) => (l.id === lineId ? updated : l));
+            }
+          }
+          if (updated.quantity <= 0) {
+            setTimeout(() => qtyInputRefs.current[lineId]?.focus(), 30);
+            return current.map((l) => (l.id === lineId ? updated : l));
+          }
+          if (updated.pRate <= 0) {
+            setTimeout(() => priceInputRefs.current[lineId]?.focus(), 30);
+            return current.map((l) => (l.id === lineId ? updated : l));
+          }
+          if (updated.retail <= 0) {
+            setTimeout(() => retailInputRefs.current[lineId]?.focus(), 30);
+            return current.map((l) => (l.id === lineId ? updated : l));
+          }
+          if (wholesaleVal <= 0) {
+            setTimeout(() => wholesaleInputRefs.current[lineId]?.focus(), 30);
+            return current.map((l) => (l.id === lineId ? updated : l));
+          }
+
+          // All valid — commit row and move to next
+          rowCommittedRef.current = true;
+          rowSnapshotRef.current = null;
+
+          if (idx >= 0 && idx < current.length - 1) {
+            const nextLine = current[idx + 1];
+            enterRow(nextLine);
+            setTimeout(() => itemNameInputRefs.current[nextLine.id]?.focus(), 30);
+            return current.map((l) => (l.id === lineId ? updated : l));
+          }
+
+          const newLineId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+          const newLine: LineItem = { ...emptyLine(), id: newLineId };
+          setTimeout(() => itemNameInputRefs.current[newLineId]?.focus(), 50);
+          return [...current.map((l) => (l.id === lineId ? updated : l)), newLine];
+        });
     },
-    [lines, enterRow]
+    [products, vatType, calcVatAndTotal, enterRow]
   );
 
 
@@ -1485,15 +1514,7 @@ export default function PurchaseOrderEntry() {
     await handleClear();
   };
 
-  // Generate unique batch number
-  const generateBatchNumber = (productCode: string, index: number) => {
-    const timestamp = Date.now().toString(36).toUpperCase();
-    const random = Math.random().toString(36).substring(2, 6).toUpperCase();
-    return `BTH-${productCode}-${timestamp}-${random}-${index}`;
-  };
-
-  // Group items into batches based on product, purchase price, and expiry date
-  // For products with allowBatches=false, merge all into a single batch per product
+  // Group items into batches (use first item's batch number or '' for backend to assign 00001, 00002, ...)
   const groupIntoBatches = (items: LineItem[]) => {
     const batchMap = new Map<string, {
       batchNumber: string;
@@ -1514,8 +1535,6 @@ export default function PurchaseOrderEntry() {
       total: number;
       multiUnitId?: string;
     }>();
-
-    let batchIndex = 1;
 
     items.forEach((item) => {
       // Check if product has allowBatches disabled
@@ -1542,9 +1561,9 @@ export default function PurchaseOrderEntry() {
           existingBatch.purchasePrice = totalQty > 0 ? weightedSum / totalQty : item.pRate;
         }
       } else {
-        // Create new batch
+        // Create new batch (use line's batch number from API or '' for backend to assign)
         batchMap.set(batchKey, {
-          batchNumber: generateBatchNumber(item.productCode, batchIndex++),
+          batchNumber: item.batchNumber?.trim() || '',
           productId: item.productId,
           productCode: item.productCode,
           productName: item.name,
@@ -1747,6 +1766,57 @@ export default function PurchaseOrderEntry() {
       setSearchDialogOpen(false);
     }
   };
+
+  const handlePostToPurchase = useCallback(() => {
+    const validLines = lines.filter((l) => l.productId && l.productCode);
+    if (validLines.length === 0) return;
+    navigate('/entry/purchase', {
+      state: {
+        fromPurchaseOrder: true,
+        supplierId: supplierId || null,
+        supplierName: supplierName || '',
+        date,
+        supplierInvoiceNo: supplierInvNo || invoiceNo,
+        vatType,
+        taxMode,
+        paymentType,
+        cashAccountId: cashAccountId || null,
+        otherDiscount,
+        otherCharges,
+        freightCharge,
+        roundOff,
+        narration: narration || '',
+        lines: validLines.map((l) => ({
+          id: l.id,
+          productId: l.productId,
+          productCode: l.productCode,
+          imei: l.imei || '',
+          name: l.name,
+          unitId: l.unitId,
+          unitName: l.unitName,
+          multiUnitId: l.multiUnitId,
+          availableUnits: (l.availableUnits || []).map((u) => ({ id: u.id, name: u.name, isMultiUnit: u.isMultiUnit, multiUnitId: u.multiUnitId })),
+          quantity: l.quantity,
+          pRate: l.pRate,
+          gross: l.gross,
+          discPercent: l.discPercent,
+          discAmount: l.discAmount,
+          vatAmount: l.vatAmount,
+          profitPercent: l.profitPercent ?? 0,
+          mrp: l.mrp,
+          retail: l.retail,
+          wholesale: l.wholesale,
+          branch: l.branch || 'MAIN BRANCH',
+          total: l.total,
+          expiryDate: l.expiryDate || '',
+          specialPrice1: l.specialPrice1,
+          specialPrice2: l.specialPrice2,
+          batchNumber: l.batchNumber || '',
+        })),
+        purchaseOrderInvoiceNo: invoiceNo,
+      },
+    });
+  }, [lines, supplierId, supplierName, date, supplierInvNo, invoiceNo, vatType, taxMode, paymentType, cashAccountId, otherDiscount, otherCharges, freightCharge, roundOff, narration, navigate]);
 
   const handleDelete = async () => {
     if (!invoiceId || !companyId) return;
@@ -2423,103 +2493,117 @@ export default function PurchaseOrderEntry() {
         <Grid item xs={12} md={6}>
           <Paper elevation={0} sx={{ p: 1.5, bgcolor: 'white', borderRadius: 1, border: '2px solid #000000' }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#1e293b', mb: 0.5 }}>Summary</Typography>
-            <Grid container spacing={1}>
-              <Grid item xs={3}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Gross Total</Typography>
-                <TextField size="small" value={calculations.itemsGross.toFixed(2)} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
-              </Grid>
-              <Grid item xs={3}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Total VAT</Typography>
-                <TextField size="small" value={calculations.totalVat.toFixed(2)} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
-              </Grid>
+            <Grid container spacing={1} sx={{ alignItems: 'stretch' }}>
+              {/* Left half: stacked adjustment fields (30% smaller width/height) */}
               <Grid item xs={6}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Total Items</Typography>
-                <TextField size="small" value={calculations.totalItems} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.6, width: '70%' }}>
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.4, fontSize: '0.7rem' }}>Other Disc %</Typography>
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={editingNumericCell?.field === 'otherDiscPercent' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscPercent === 0 ? '' : String(otherDiscPercent))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscPercent', value: otherDiscPercent === 0 ? '' : String(otherDiscPercent) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscPercent' ? editingNumericCell.value : ''; handleOtherDiscPercentChange(parseNumericInput(raw)); setIsSaved(false); setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? null : prev); }}
+                      inputRef={otherDiscPercentRef}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => otherDiscountRef.current?.focus(), 50); } }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5, minHeight: 28 }, '& .MuiOutlinedInput-input': { py: 0.4, fontSize: '0.75rem' } }}
+                    />
+                  </Box>
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.4, fontSize: '0.7rem' }}>Other Discount</Typography>
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={editingNumericCell?.field === 'otherDiscount' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscount === 0 ? '' : String(otherDiscount))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscount', value: otherDiscount === 0 ? '' : String(otherDiscount) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscount' ? editingNumericCell.value : ''; setOtherDiscount(parseNumericInput(raw)); setIsSaved(false); setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? null : prev); }}
+                      inputRef={otherDiscountRef}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => otherChargesRef.current?.focus(), 50); } }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5, minHeight: 28 }, '& .MuiOutlinedInput-input': { py: 0.4, fontSize: '0.75rem' } }}
+                    />
+                  </Box>
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.4, fontSize: '0.7rem' }}>Other Charges</Typography>
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={editingNumericCell?.field === 'otherCharges' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setIsSaved(false); setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? null : prev); }}
+                      inputRef={otherChargesRef}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => freightRef.current?.focus(), 50); } }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5, minHeight: 28 }, '& .MuiOutlinedInput-input': { py: 0.4, fontSize: '0.75rem' } }}
+                    />
+                  </Box>
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.4, fontSize: '0.7rem' }}>Freight</Typography>
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={editingNumericCell?.field === 'freightCharge' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (freightCharge === 0 ? '' : String(freightCharge))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'freightCharge', value: freightCharge === 0 ? '' : String(freightCharge) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.field === 'freightCharge' ? editingNumericCell.value : ''; setFreightCharge(parseNumericInput(raw)); setIsSaved(false); setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? null : prev); }}
+                      inputRef={freightRef}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => roundOffRef.current?.focus(), 50); } }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5, minHeight: 28 }, '& .MuiOutlinedInput-input': { py: 0.4, fontSize: '0.75rem' } }}
+                    />
+                  </Box>
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.4, fontSize: '0.7rem' }}>Round Off</Typography>
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={editingNumericCell?.field === 'roundOff' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))}
+                      onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) }); }}
+                      onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev)}
+                      onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setIsSaved(false); setEditingNumericCell((prev) => prev?.field === 'roundOff' ? null : prev); }}
+                      inputRef={roundOffRef}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => saveButtonRef.current?.focus(), 50); } }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.5, minHeight: 28 }, '& .MuiOutlinedInput-input': { py: 0.4, fontSize: '0.75rem' } }}
+                    />
+                  </Box>
+                </Box>
               </Grid>
-              <Grid item xs={4}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Other Disc %</Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={editingNumericCell?.field === 'otherDiscPercent' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscPercent === 0 ? '' : String(otherDiscPercent))}
-                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscPercent', value: otherDiscPercent === 0 ? '' : String(otherDiscPercent) }); }}
-                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? { ...prev, value: e.target.value } : prev)}
-                  onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscPercent' ? editingNumericCell.value : ''; handleOtherDiscPercentChange(parseNumericInput(raw)); setIsSaved(false); setEditingNumericCell((prev) => prev?.field === 'otherDiscPercent' ? null : prev); }}
-                  inputRef={otherDiscPercentRef}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => otherDiscountRef.current?.focus(), 50); } }}
-                  fullWidth
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                />
-              </Grid>
-              <Grid item xs={4}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Other Discount</Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={editingNumericCell?.field === 'otherDiscount' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherDiscount === 0 ? '' : String(otherDiscount))}
-                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherDiscount', value: otherDiscount === 0 ? '' : String(otherDiscount) }); }}
-                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? { ...prev, value: e.target.value } : prev)}
-                  onBlur={() => { const raw = editingNumericCell?.field === 'otherDiscount' ? editingNumericCell.value : ''; setOtherDiscount(parseNumericInput(raw)); setIsSaved(false); setEditingNumericCell((prev) => prev?.field === 'otherDiscount' ? null : prev); }}
-                  inputRef={otherDiscountRef}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => otherChargesRef.current?.focus(), 50); } }}
-                  fullWidth
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                />
-              </Grid>
-              <Grid item xs={4}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Other Charges</Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={editingNumericCell?.field === 'otherCharges' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (otherCharges === 0 ? '' : String(otherCharges))}
-                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'otherCharges', value: otherCharges === 0 ? '' : String(otherCharges) }); }}
-                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? { ...prev, value: e.target.value } : prev)}
-                  onBlur={() => { const raw = editingNumericCell?.field === 'otherCharges' ? editingNumericCell.value : ''; setOtherCharges(parseNumericInput(raw)); setIsSaved(false); setEditingNumericCell((prev) => prev?.field === 'otherCharges' ? null : prev); }}
-                  inputRef={otherChargesRef}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => freightRef.current?.focus(), 50); } }}
-                  fullWidth
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                />
-              </Grid>
-              <Grid item xs={4}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Freight</Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={editingNumericCell?.field === 'freightCharge' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (freightCharge === 0 ? '' : String(freightCharge))}
-                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'freightCharge', value: freightCharge === 0 ? '' : String(freightCharge) }); }}
-                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? { ...prev, value: e.target.value } : prev)}
-                  onBlur={() => { const raw = editingNumericCell?.field === 'freightCharge' ? editingNumericCell.value : ''; setFreightCharge(parseNumericInput(raw)); setIsSaved(false); setEditingNumericCell((prev) => prev?.field === 'freightCharge' ? null : prev); }}
-                  inputRef={freightRef}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => roundOffRef.current?.focus(), 50); } }}
-                  fullWidth
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                />
-              </Grid>
-              <Grid item xs={4}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Round Off</Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={editingNumericCell?.field === 'roundOff' && editingNumericCell.lineId === undefined ? editingNumericCell.value : (roundOff === 0 ? '' : String(roundOff))}
-                  onFocus={(e) => { handleTextFieldFocus(e); setEditingNumericCell({ field: 'roundOff', value: roundOff === 0 ? '' : String(roundOff) }); }}
-                  onChange={(e) => setEditingNumericCell((prev) => prev?.field === 'roundOff' ? { ...prev, value: e.target.value } : prev)}
-                  onBlur={() => { const raw = editingNumericCell?.field === 'roundOff' ? editingNumericCell.value : ''; setRoundOff(parseNumericInput(raw)); setIsSaved(false); setEditingNumericCell((prev) => prev?.field === 'roundOff' ? null : prev); }}
-                  inputRef={roundOffRef}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setTimeout(() => saveButtonRef.current?.focus(), 50); } }}
-                  fullWidth
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                />
-              </Grid>
-              <Grid item xs={4}>
-                <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 1 }}>Grand Total</Typography>
-                <TextField
-                  size="small"
-                  value={calculations.grandTotal.toFixed(2)}
-                  InputProps={{ readOnly: true }}
-                  fullWidth
-                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: THEME.primary }, '& .MuiInputBase-input': { fontWeight: 700, fontSize: '1.1rem', color: 'white' } }}
-                />
+              {/* Right half: totals */}
+              <Grid item xs={6}>
+                <Grid container spacing={1}>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.5, fontSize: '0.75rem' }}>Gross Total</Typography>
+                    <TextField size="small" value={calculations.itemsGross.toFixed(2)} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
+                  </Grid>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.5, fontSize: '0.75rem' }}>Total VAT</Typography>
+                    <TextField size="small" value={calculations.totalVat.toFixed(2)} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
+                  </Grid>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.5, fontSize: '0.7rem' }}>Before tax (incl. adj.)</Typography>
+                    <TextField size="small" value={(calculations.grandTotal - calculations.totalVat).toFixed(2)} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
+                  </Grid>
+                  <Grid item xs={6}>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.5, fontSize: '0.75rem' }}>Total Items</Typography>
+                    <TextField size="small" value={calculations.totalItems} InputProps={{ readOnly: true }} fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: '#f8fafc' } }} />
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Typography variant="body2" sx={{ fontWeight: 500, color: '#374151', mb: 0.5, fontSize: '0.75rem' }}>Grand Total</Typography>
+                    <TextField
+                      size="small"
+                      value={calculations.grandTotal.toFixed(2)}
+                      InputProps={{ readOnly: true }}
+                      fullWidth
+                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: THEME.primary }, '& .MuiInputBase-input': { fontWeight: 700, fontSize: '1.1rem', color: 'white' } }}
+                    />
+                  </Grid>
+                </Grid>
               </Grid>
             </Grid>
           </Paper>
@@ -2545,6 +2629,9 @@ export default function PurchaseOrderEntry() {
         </Button>
         <Button variant="contained" size="small" startIcon={<SearchIcon />} onClick={() => setSearchDialogOpen(true)} sx={{ bgcolor: '#16a34a', color: '#fff', borderRadius: 1, textTransform: 'none', fontWeight: 600, px: 2, fontSize: '0.85rem', boxShadow: 'none', '&:hover': { bgcolor: '#000000' } }}>
           Search
+        </Button>
+        <Button variant="contained" size="small" startIcon={<SendIcon />} onClick={handlePostToPurchase} disabled={!invoiceId} sx={{ bgcolor: '#16a34a', color: '#fff', borderRadius: 1, textTransform: 'none', fontWeight: 600, px: 2, fontSize: '0.85rem', boxShadow: 'none', '&:hover': { bgcolor: '#000000' }, '&.Mui-disabled': { bgcolor: '#d1d5db', color: '#9ca3af' } }}>
+          Post to Purchase
         </Button>
       </Paper>
 

@@ -12,8 +12,8 @@ import {
   IconButton,
   InputLabelProps,
   Dialog,
-  Checkbox,
   FormControlLabel,
+  Switch,
   DialogTitle,
   DialogContent,
   DialogActions,
@@ -27,7 +27,6 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import LocalOfferIcon from '@mui/icons-material/LocalOffer';
 import { useAppSelector } from '../store/hooks';
 import { productApi } from '../services/api';
-import DateInput from '../components/DateInput';
 
 const labelShrink: InputLabelProps = { shrink: true };
 
@@ -96,7 +95,6 @@ export default function ProductCreate() {
   const [purchasePrice, setPurchasePrice] = useState('');
   const [specialPrice, setSpecialPrice] = useState('');
   const [specialPrice2, setSpecialPrice2] = useState('');
-  const [expiryDate, setExpiryDate] = useState('');
   const [imageUrl, setImageUrl] = useState('');
   const [allowBatches, setAllowBatches] = useState(true);
   const [disableBatchesConfirmOpen, setDisableBatchesConfirmOpen] = useState(false);
@@ -194,7 +192,6 @@ export default function ProductCreate() {
     setPurchasePrice(String(p.purchasePrice ?? ''));
     setSpecialPrice(String(p.specialPrice ?? ''));
     setSpecialPrice2(String(p.specialPrice2 ?? ''));
-    setExpiryDate(p.expiryDate ? new Date(p.expiryDate as string).toISOString().slice(0, 10) : '');
     setImageUrl((p.imageUrl as string) ?? '');
     setAllowBatches((p as any).allowBatches !== false);
     const mus = (p.multiUnits as Array<{ multiUnitId?: string; imei?: string; conversion?: number; price?: number; unitId?: { _id: string } | string; wholesale?: number; retail?: number; specialPrice1?: number; specialPrice2?: number }>) ?? [];
@@ -363,7 +360,6 @@ export default function ProductCreate() {
     setPurchasePrice('');
     setSpecialPrice('');
     setSpecialPrice2('');
-    setExpiryDate('');
     setImageUrl('');
     setAllowBatches(true);
     setMultiUnits([]);
@@ -384,7 +380,6 @@ export default function ProductCreate() {
     purchasePrice: purchasePrice ? Number(purchasePrice) : 0,
     specialPrice: specialPrice ? Number(specialPrice) : undefined,
     specialPrice2: specialPrice2 ? Number(specialPrice2) : undefined,
-    expiryDate: expiryDate || undefined,
     imageUrl: imageUrl.trim() || undefined,
     allowBatches,
     multiUnits: allowBatches ? [] : multiUnits
@@ -574,12 +569,20 @@ export default function ProductCreate() {
   if (!companyId) return <Typography color="error">Select a company first.</Typography>;
 
   return (
-    <Box>
-      <Typography variant="h4" gutterBottom>Product Reg</Typography>
-      <Paper sx={{ p: 3, maxWidth: 900 }}>
+    <Box sx={{ minHeight: '100vh', bgcolor: '#f1f5f9', p: 3 }}>
+      <Typography variant="h4" gutterBottom sx={{ color: '#334155', mb: 3, fontWeight: 700 }}>New Product Registration</Typography>
+      <Paper sx={{
+        p: 3,
+        maxWidth: 900,
+        bgcolor: '#ffffff',
+        boxShadow: '0 1px 3px rgba(0,0,0,.08)',
+        borderRadius: 2.5,
+        '& .MuiFormLabel-root': { textTransform: 'uppercase', color: '#64748b', fontSize: '0.75rem', fontWeight: 600 },
+        '& .MuiOutlinedInput-root': { borderRadius: 1.5, bgcolor: '#fafafa', '&.Mui-disabled': { bgcolor: '#f1f5f9' } },
+      }}>
         <Grid container spacing={2}>
           <Grid item xs={12} sm={4}>
-            <TextField fullWidth size="small" label="Prod Code" value={code} disabled InputLabelProps={labelShrink} helperText="Auto-generated" />
+            <TextField fullWidth size="small" label="Product Code" value={code} disabled InputLabelProps={labelShrink} helperText="Auto-generated" />
           </Grid>
           <Grid item xs={12} sm={4}>
             <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
@@ -739,53 +742,60 @@ export default function ProductCreate() {
             <TextField fullWidth size="small" type="number" label="Purchase Rate" value={purchasePrice} onChange={(e) => setPurchasePrice(e.target.value)} InputLabelProps={labelShrink} inputProps={{ step: 0.01, min: 0 }} sx={{ '& input::-webkit-outer-spin-button, & input::-webkit-inner-spin-button': { WebkitAppearance: 'none', margin: 0 }, '& input[type=number]': { MozAppearance: 'textfield' } }} />
           </Grid>
           <Grid item xs={12} sm={4}>
-            <DateInput label="Expiry Date" value={expiryDate} onChange={setExpiryDate} size="small" />
-          </Grid>
-          <Grid item xs={12} sm={4}>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>Image (max 20MB)</Typography>
-            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, flexWrap: 'wrap' }}>
+            <Typography variant="body2" sx={{ mb: 1, color: '#64748b', fontWeight: 600, textTransform: 'uppercase', fontSize: '0.75rem' }}>Product Image</Typography>
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, flexWrap: 'wrap' }}>
+              <input type="file" ref={fileInputRef} accept="image/jpeg,image/jpg,image/png" onChange={handleImageChange} style={{ display: 'none' }} />
               <Box
                 sx={{
-                  width: 100,
-                  height: 100,
-                  border: '1px solid',
-                  borderColor: 'divider',
-                  borderRadius: 1,
+                  width: 120,
+                  height: 120,
+                  border: '2px dashed',
+                  borderColor: '#cbd5e1',
+                  borderRadius: 2,
                   overflow: 'hidden',
                   display: 'flex',
+                  flexDirection: 'column',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  bgcolor: 'action.hover',
+                  bgcolor: '#f8fafc',
+                  p: 1,
                 }}
               >
                 {imagePreviewSrc ? (
                   <img src={imagePreviewSrc} alt="Product" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 ) : (
-                  <Typography variant="caption" color="text.secondary">No image</Typography>
+                  <>
+                    <Typography variant="body2" sx={{ fontWeight: 600, color: '#475569', mb: 0.5 }}>Upload Photo</Typography>
+                    <Typography variant="caption" sx={{ color: '#94a3b8', mb: 1 }}>PNG, JPG up to 5MB</Typography>
+                    <Button size="small" variant="outlined" onClick={handleImageBrowse} disabled={!companyId || imageUploading} sx={{ borderColor: '#cbd5e1', color: '#475569', textTransform: 'none', '&:hover': { borderColor: '#94a3b8', bgcolor: '#f1f5f9' } }}>
+                      {imageUploading ? 'Uploading…' : 'Select File'}
+                    </Button>
+                  </>
                 )}
               </Box>
-              <Box>
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  accept="image/jpeg,image/jpg,image/png"
-                  onChange={handleImageChange}
-                  style={{ display: 'none' }}
-                />
-                <Button size="small" variant="outlined" onClick={handleImageBrowse} disabled={!companyId || imageUploading}>
-                  {imageUploading ? 'Uploading…' : 'Browse'}
-                </Button>
-                {imageError && <Typography variant="caption" color="error" display="block" sx={{ mt: 0.5 }}>{imageError}</Typography>}
-              </Box>
+              {imagePreviewSrc && (
+                <Button size="small" variant="outlined" onClick={handleImageBrowse} disabled={!companyId || imageUploading} sx={{ borderColor: '#cbd5e1', color: '#475569', textTransform: 'none' }}>Select File</Button>
+              )}
+              {imageError && <Typography variant="caption" color="error" display="block" sx={{ mt: 0.5 }}>{imageError}</Typography>}
             </Box>
           </Grid>
         </Grid>
 
         <Box sx={{ mt: 3, mb: 1, display: 'flex', alignItems: 'center', gap: 2 }}>
-          <Typography variant="subtitle1">Multi Unit Section</Typography>
+          <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600, textTransform: 'uppercase', fontSize: '0.75rem' }}>Options</Typography>
           <FormControlLabel
-            control={<Checkbox checked={allowBatches} onChange={(e) => { if (!e.target.checked) { setDisableBatchesConfirmOpen(true); } else { setEnableBatchesConfirmOpen(true); } }} size="small" />}
-            label={<Typography variant="body2" sx={{ fontSize: '0.85rem' }}>Allow Batches</Typography>}
+            control={
+              <Switch
+                checked={allowBatches}
+                onChange={(e) => { if (!e.target.checked) { setDisableBatchesConfirmOpen(true); } else { setEnableBatchesConfirmOpen(true); } }}
+                size="medium"
+                sx={{
+                  '& .MuiSwitch-switchBase.Mui-checked': { color: '#16a34a' },
+                  '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#16a34a' },
+                }}
+              />
+            }
+            label={<Typography variant="body2" sx={{ fontSize: '0.85rem', color: '#334155' }}>Allow Batches</Typography>}
             sx={{ ml: 0 }}
           />
         </Box>
@@ -806,48 +816,44 @@ export default function ProductCreate() {
           </>
         )}
 
-        <Box sx={{ mt: 3, display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
+        <Box sx={{ mt: 3, display: 'flex', gap: 1.5, flexWrap: 'wrap', alignItems: 'center' }}>
           <Button
-            variant="contained"
-            onClick={handleSave}
-            disabled={saving || (!!editingId && !editModeActive)}
-            startIcon={<SaveIcon />}
-            sx={{ bgcolor: '#1976d2', '&:hover': { bgcolor: '#1565c0' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
+            variant="outlined"
+            onClick={handleDeleteClick}
+            disabled={!editingId || saving}
+            startIcon={<DeleteIcon />}
+            sx={{ borderColor: '#cbd5e1', color: '#475569', minWidth: 100, py: 1, fontSize: '0.875rem', textTransform: 'none', '&:hover': { borderColor: '#94a3b8', bgcolor: '#f1f5f9' } }}
           >
-            SAVE
+            Delete
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={handleClear}
+            startIcon={<ClearIcon />}
+            sx={{ borderColor: '#cbd5e1', color: '#475569', minWidth: 100, py: 1, fontSize: '0.875rem', textTransform: 'none', '&:hover': { borderColor: '#94a3b8', bgcolor: '#f1f5f9' } }}
+          >
+            Clear
+          </Button>
+          <Button onClick={() => navigate('/master/products')} sx={{ color: '#475569', minWidth: 80, py: 1, fontSize: '0.875rem', textTransform: 'none' }}>
+            Cancel
           </Button>
           <Button
             variant="contained"
             onClick={handleEditClick}
             disabled={!editingId || saving}
             startIcon={<EditIcon />}
-            sx={{ bgcolor: '#607d8b', '&:hover': { bgcolor: '#546e7a' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
+            sx={{ bgcolor: '#0d9488', color: '#fff', minWidth: 100, py: 1, fontSize: '0.875rem', textTransform: 'none', '&:hover': { bgcolor: '#0f766e' } }}
           >
-            EDIT
+            Edit
           </Button>
           <Button
             variant="contained"
-            onClick={handleDeleteClick}
-            disabled={!editingId || saving}
-            startIcon={<DeleteIcon />}
-            sx={{ bgcolor: '#f44336', '&:hover': { bgcolor: '#d32f2f' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
+            onClick={handleSave}
+            disabled={saving || (!!editingId && !editModeActive)}
+            startIcon={<SaveIcon />}
+            sx={{ bgcolor: '#15803d', color: '#fff', minWidth: 100, py: 1, fontSize: '0.875rem', textTransform: 'none', '&:hover': { bgcolor: '#166534' } }}
           >
-            DELETE
-          </Button>
-          <Button
-            variant="contained"
-            onClick={handleClear}
-            startIcon={<ClearIcon />}
-            sx={{ bgcolor: '#00bcd4', '&:hover': { bgcolor: '#00acc1' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
-          >
-            CLEAR
-          </Button>
-          <Button
-            variant="contained"
-            onClick={() => navigate('/master/products')}
-            sx={{ bgcolor: '#607d8b', '&:hover': { bgcolor: '#546e7a' }, minWidth: 110, py: 1, fontSize: '0.9rem' }}
-          >
-            CANCEL
+            Save
           </Button>
         </Box>
       </Paper>

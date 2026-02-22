@@ -32,6 +32,7 @@ export interface CreateQuotationInput {
   salesmanId?: string;
   rateType?: 'Retail' | 'WSale' | 'Special1' | 'Special2';
   vatType?: 'Vat' | 'NonVat';
+  taxMode?: 'inclusive' | 'exclusive';
   otherDiscount?: number;
   otherCharges?: number;
   freightCharge?: number;
@@ -143,6 +144,7 @@ export async function createQuotation(
     rateType: input.rateType || 'WSale',
     paymentType: 'Cash',
     vatType: input.vatType || 'Vat',
+    taxMode: input.taxMode ?? 'inclusive',
     grossAmount,
     discountAmount,
     taxableAmount,
@@ -299,6 +301,7 @@ export async function updateQuotation(
           customerAddress: input.customerAddress ?? existing.customerAddress,
           rateType: input.rateType ?? existing.rateType,
           vatType: input.vatType ?? existing.vatType,
+          taxMode: input.taxMode ?? existing.taxMode ?? 'inclusive',
           grossAmount,
           discountAmount,
           taxableAmount,
@@ -427,6 +430,7 @@ export async function getQuotation(invoiceId: string, companyId: string) {
     customerAddress: inv.customerAddress || '',
     rateType: inv.rateType,
     vatType: inv.vatType,
+    taxMode: inv.taxMode ?? 'inclusive',
     grossAmount: inv.grossAmount,
     discountAmount: inv.discountAmount,
     taxableAmount: inv.taxableAmount,
